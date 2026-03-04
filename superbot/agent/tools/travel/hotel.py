@@ -63,19 +63,28 @@ class HotelTool(Tool):
         return await page.evaluate(r"""
             () => {
                 const hotels = [];
-                const items = document.querySelectorAll('[class*="hotel-item"], [class*="hotel-list"] li');
+                // 查找所有酒店项
+                const items = document.querySelectorAll('[class*="hotel-item"], .hotel-list-item, li[data-hotelid]');
 
                 items.forEach((item, idx) => {
                     try {
-                        const name = item.querySelector('[class*="name"], [class*="title"]')?.innerText?.trim();
-                        const priceEl = item.querySelector('[class*="price"]');
-                        const price = priceEl?.innerText?.match(/¥(\d+)/)?.[1];
-                        const rating = item.querySelector('[class*="rating"]')?.innerText?.trim();
+                        // 查找酒店名称 - 从截图看是 h2 或 .name
+                        const nameEl = item.querySelector('h2, .name, [class*="title"] a, [class*="hotel"] a');
+                        const name = nameEl?.innerText?.trim() || item.innerText.split('¥')[0]?.trim();
+
+                        // 查找价格 - 从截图看价格直接在文本中
+                        const text = item.innerText;
+                        const priceMatch = text.match(/¥(\d+)/);
+                        const price = priceMatch ? parseInt(priceMatch[1]) : null;
+
+                        // 查找评分
+                        const ratingEl = item.querySelector('[class*="score"], [class*="rating"], [class*="star"]');
+                        const rating = ratingEl?.innerText?.trim();
 
                         if (name || price) {
                             hotels.push({
-                                name: name || `酒店${idx + 1}`,
-                                price: price ? parseInt(price) : null,
+                                name: name ? name.substring(0, 50) : `酒店${idx + 1}`,
+                                price: price,
                                 rating: rating
                             });
                         }
@@ -135,8 +144,12 @@ class HotelTool(Tool):
 
                 search_url = base_url + params
                 logger.info(f"搜索酒店: {search_url}")
-                await page.goto(search_url, wait_until="domcontentloaded")
-                await asyncio.sleep(5)
+
+                # 先访问首页，再访问酒店列表（避免反爬）
+                await page.goto("https://www.ctrip.com", wait_until="domcontentloaded")
+                await asyncio.sleep(3)
+                await page.goto(search_url, wait_until="networkidle")
+                await asyncio.sleep(10)
 
                 hotels = await self._extract_hotels(page)
 
