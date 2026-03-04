@@ -20,3 +20,4 @@ poetry.lock
 .pytest_cache/
 .DS_Store
 CLAUDE.md
+.worktrees/
