@@ -21,3 +21,4 @@ poetry.lock
 .DS_Store
 CLAUDE.md
 .worktrees/
+.DS_Store

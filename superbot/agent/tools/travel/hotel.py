@@ -6,6 +6,10 @@ from typing import Any
 
 from superbot.agent.tools.base import Tool
 from superbot.agent.tools.travel.browser import StealthBrowser
+from superbot.agent.tools.travel.session import get_session_manager
+from superbot.agent.tools.travel.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class HotelTool(Tool):
@@ -46,25 +50,13 @@ class HotelTool(Tool):
 
     def __init__(self):
         self.browser = None
+        self.session = get_session_manager()
 
     async def _get_browser(self):
         if self.browser is None:
             self.browser = StealthBrowser()
             await self.browser.initialize()
         return self.browser
-
-    async def _check_login(self, page) -> bool:
-        """Check if login is required."""
-        try:
-            login_indicators = await page.query_selector_all(
-                '[class*="login"], [class*="qrcode"], #login-modal'
-            )
-            for el in login_indicators:
-                if await el.is_visible():
-                    return True
-            return False
-        except:
-            return False
 
     async def _extract_hotels(self, page) -> list:
         """Extract hotel data from page."""
@@ -105,6 +97,36 @@ class HotelTool(Tool):
             browser = await self._get_browser()
             page = await browser.new_page()
 
+            # 严格流程：
+            # 1. 加载保存的 Cookie
+            # 2. 检查登录状态
+            # 3. 未登录则扫码登录
+            # 4. 登录成功后保存 Cookie
+            # 5. 进行搜索
+
+            # 1. 加载保存的 Cookie
+            if self.session.has_session():
+                logger.info("加载已保存的 Cookie...")
+                await self.session.apply_cookies_async(page.context)
+
+            # 2. 检查是否已登录
+            is_logged_in = await self.session.check_login(page)
+            if is_logged_in:
+                logger.info("已登录，直接搜索...")
+
+            # 3. 未登录则扫码登录
+            if not is_logged_in:
+                logger.info("未登录，开始扫码登录流程...")
+                login_success = await self.session.wait_for_login(page, timeout=120)
+                if not login_success:
+                    return json.dumps({
+                        "error": "login_required",
+                        "message": "需要登录才能搜索酒店，请扫码登录后重试。截图已保存到 ~/.superbot/sessions/ctrip/login_qr.png"
+                    }, ensure_ascii=False)
+                # 4. 登录成功后，保存 Cookie
+                await self.session.save_cookies(page.context)
+
+            # 5. 搜索酒店
             try:
                 base_url = "https://hotels.ctrip.com/hotels/list"
                 params = f"?city={city}&checkin={checkin}&checkout={checkout}"
@@ -112,14 +134,9 @@ class HotelTool(Tool):
                     params += f"&keyword={keywords}"
 
                 search_url = base_url + params
+                logger.info(f"搜索酒店: {search_url}")
                 await page.goto(search_url, wait_until="domcontentloaded")
                 await asyncio.sleep(5)
-
-                if await self._check_login(page):
-                    return json.dumps({
-                        "error": "login_required",
-                        "message": "需要登录，请先登录携程"
-                    }, ensure_ascii=False)
 
                 hotels = await self._extract_hotels(page)
 
