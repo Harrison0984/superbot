@@ -46,7 +46,7 @@
 
 | Component | Description |
 |-----------|-------------|
-| **Chat Channels** | Adapters for Telegram, WhatsApp, Feishu, Email, QQ, Matrix |
+| **Chat Channels** | Adapters for Telegram, WhatsApp, Feishu, Email, QQ |
 | **Message Bus** | Async queue for inbound/outbound messages |
 | **Agent Loop** | Core reasoning loop with context, memory, and tool execution |
 | **LLM Providers** | Pluggable provider registry (OpenAI, Anthropic, OpenRouter, etc.) |
@@ -161,72 +161,6 @@ Connect superbot to your favorite chat platform.
 
 
 **3. Run**
-
-```bash
-superbot gateway
-```
-
-</details>
-
-<details>
-<summary><b>Matrix (Element)</b></summary>
-
-Install Matrix dependencies first:
-
-```bash
-pip install superbot-ai[matrix]
-```
-
-**1. Create/choose a Matrix account**
-
-- Create or reuse a Matrix account on your homeserver (for example `matrix.org`).
-- Confirm you can log in with Element.
-
-**2. Get credentials**
-
-- You need:
-  - `userId` (example: `@superbot:matrix.org`)
-  - `accessToken`
-  - `deviceId` (recommended so sync tokens can be restored across restarts)
-- You can obtain these from your homeserver login API (`/_matrix/client/v3/login`) or from your client's advanced session settings.
-
-**3. Configure**
-
-```json
-{
-  "channels": {
-    "matrix": {
-      "enabled": true,
-      "homeserver": "https://matrix.org",
-      "userId": "@superbot:matrix.org",
-      "accessToken": "syt_xxx",
-      "deviceId": "NANOBOT01",
-      "e2eeEnabled": true,
-      "allowFrom": ["@your_user:matrix.org"],
-      "groupPolicy": "open",
-      "groupAllowFrom": [],
-      "allowRoomMentions": false,
-      "maxMediaBytes": 20971520
-    }
-  }
-}
-```
-
-> Keep a persistent `matrix-store` and stable `deviceId` — encrypted session state is lost if these change across restarts.
-
-| Option | Description |
-|--------|-------------|
-| `allowFrom` | User IDs allowed to interact. Empty = all senders. |
-| `groupPolicy` | `open` (default), `mention`, or `allowlist`. |
-| `groupAllowFrom` | Room allowlist (used when policy is `allowlist`). |
-| `allowRoomMentions` | Accept `@room` mentions in mention mode. |
-| `e2eeEnabled` | E2EE support (default `true`). Set `false` for plaintext-only. |
-| `maxMediaBytes` | Max attachment size (default `20MB`). Set `0` to block all media. |
-
-
-
-
-**4. Run**
 
 ```bash
 superbot gateway
@@ -405,18 +339,6 @@ superbot gateway
 ```
 
 </details>
-
-## 🌐 Agent Social Network
-
-🐈 superbot is capable of linking to the agent social network (agent community). **Just send one message and your superbot joins automatically!**
-
-| Platform | How to Join (send this message to your bot) |
-|----------|-------------|
-| [**Moltbook**](https://www.moltbook.com/) | `Read https://moltbook.com/skill.md and follow the instructions to join Moltbook` |
-| [**ClawdChat**](https://clawdchat.ai/) | `Read https://clawdchat.ai/skill.md and follow the instructions to join ClawdChat` |
-
-Simply send the command above to your superbot (via CLI or any chat channel), and it will handle the rest.
-
 ## ⚙️ Configuration
 
 Config file: `~/.superbot/config.json`
@@ -804,18 +726,6 @@ superbot/
 ├── config/         # ⚙️ Configuration
 └── cli/            # 🖥️ Commands
 ```
-
-## 🤝 Contribute & Roadmap
-
-PRs welcome! The codebase is intentionally small and readable. 🤗
-
-**Roadmap** — Pick an item and [open a PR](https://github.com/Harrison0984/superbot/pulls)!
-
-- [ ] **Multi-modal** — See and hear (images, voice, video)
-- [ ] **Long-term memory** — Never forget important context
-- [ ] **Better reasoning** — Multi-step planning and reflection
-- [ ] **More integrations** — Calendar and more
-- [ ] **Self-improvement** — Learn from feedback and mistakes
 
 <p align="center">
   <sub>superbot is for educational, research, and technical exchange purposes only</sub>
