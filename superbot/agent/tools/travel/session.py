@@ -63,12 +63,19 @@ class SessionManager:
                     logger.info("User is logged in")
                     return True
 
-            # Also check if login popup is NOT present
-            login_popup = await page.query_selector('[class*="login-mask"], [class*="login-modal"]')
-            if not login_popup or not await login_popup.is_visible():
-                logger.info("No login popup, assuming logged in")
-                return True
+            # Check for APP login requirement (酒店页面会显示 APP 扫码)
+            app_login = await page.query_selector_all('[class*="app"], [class*="扫码"], text=re.compile("APP")')
+            for el in app_login:
+                if await el.is_visible():
+                    logger.info("APP login required, not logged in")
+                    return False
 
+            # Check if explicitly logged in (has user info in URL or specific elements)
+            # 如果页面需要登录但没有显示任何用户信息，才算未登录
+            # 但如果页面根本不需要登录（如航班搜索），会显示内容
+
+            # 简化：只有找到用户信息才算已登录
+            logger.info("No user info found, not logged in")
             return False
         except Exception as e:
             logger.warning(f"Error checking login: {e}")
