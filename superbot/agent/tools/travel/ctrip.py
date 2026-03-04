@@ -142,6 +142,42 @@ class CtripMonitor:
         logger.info("⚠️  Please login manually in the browser")
         logger.info("=" * 50)
 
+        # 截图二维码区域
+        import os
+        from pathlib import Path
+        screenshot_dir = Path.home() / ".superbot" / "sessions"
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_path = screenshot_dir / "ctrip_login.png"
+
+        try:
+            # 尝试找到二维码区域并截图
+            qr_selectors = [
+                '[class*="qrcode"]',
+                '[class*="qr-code"]',
+                '[class*="QRCode"]',
+                '#qrcode',
+                '.login-qrcode',
+            ]
+
+            qr_element = None
+            for selector in qr_selectors:
+                qr_element = await page.query_selector(selector)
+                if qr_element:
+                    break
+
+            if qr_element:
+                # 截取二维码区域
+                await qr_element.screenshot(path=str(screenshot_path))
+                logger.info(f"📱 二维码截图已保存到: {screenshot_path}")
+            else:
+                # 如果没找到二维码，整个页面
+                await page.screenshot(path=str(screenshot_path), full_page=True)
+                logger.info(f"📱 登录页面截图已保存到: {screenshot_path}")
+
+            logger.info(f"请扫描二维码登录... (截图路径: {screenshot_path})")
+        except Exception as e:
+            logger.warning(f"截图失败: {e}")
+
         start_time = asyncio.get_event_loop().time()
 
         while asyncio.get_event_loop().time() - start_time < timeout:
