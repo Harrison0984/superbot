@@ -21,7 +21,7 @@ class HotelTool(Tool):
 
     @property
     def description(self) -> str:
-        return "搜索酒店价格，支持城市、入住日期、退房日期"
+        return "搜索酒店价格，支持城市，入住日期，退房日期"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -56,40 +56,27 @@ class HotelTool(Tool):
 
     async def _extract_hotels(self, page) -> list:
         """Extract hotel data from page."""
-        return await page.evaluate(r"""
-            () => {
-                const hotels = [];
-                // 查找所有酒店项
-                const items = document.querySelectorAll('[class*="hotel-item"], .hotel-list-item, li[data-hotelid]');
-
-                items.forEach((item, idx) => {
-                    try {
-                        // 查找酒店名称 - 从截图看是 h2 或 .name
-                        const nameEl = item.querySelector('h2, .name, [class*="title"] a, [class*="hotel"] a');
-                        const name = nameEl?.innerText?.trim() || item.innerText.split('¥')[0]?.trim();
-
-                        // 查找价格 - 从截图看价格直接在文本中
-                        const text = item.innerText;
-                        const priceMatch = text.match(/¥(\d+)/);
-                        const price = priceMatch ? parseInt(priceMatch[1]) : null;
-
-                        // 查找评分
-                        const ratingEl = item.querySelector('[class*="score"], [class*="rating"], [class*="star"]');
-                        const rating = ratingEl?.innerText?.trim();
-
-                        if (name || price) {
-                            hotels.push({
-                                name: name ? name.substring(0, 50) : `酒店${idx + 1}`,
-                                price: price,
-                                rating: rating
-                            });
-                        }
-                    } catch (e) {}
-                });
-
-                return hotels;
+        js_code = """() => {
+            var hotels = [];
+            var listContainer = document.querySelector('div.hotel-list');
+            if (!listContainer) return hotels;
+            var items = listContainer.children;
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                var text = item.innerText;
+                if (!text) continue;
+                var priceMatch = text.match(/¥(\\d+)/);
+                var price = priceMatch ? parseInt(priceMatch[1]) : null;
+                var lines = text.split('\\n').filter(function(l) { return l.trim(); });
+                var name = lines[0] || '';
+                name = name.replace(/¥\\d+/, '').trim().substring(0, 50);
+                if (name && price) {
+                    hotels.push({name: name, price: price, rating: null});
+                }
             }
-        """)
+            return hotels;
+        }"""
+        return await page.evaluate(js_code)
 
     async def execute(self, **kwargs: Any) -> str:
         """Execute hotel search."""
@@ -101,13 +88,6 @@ class HotelTool(Tool):
         try:
             browser = await self._get_browser()
             page = await browser.new_page()
-
-            # 严格流程：
-            # 1. 加载保存的 Cookie
-            # 2. 检查登录状态
-            # 3. 未登录则扫码登录
-            # 4. 登录成功后保存 Cookie
-            # 5. 进行搜索
 
             # 1. 加载保存的 Cookie
             if self.session.has_session():
@@ -126,22 +106,19 @@ class HotelTool(Tool):
                 if not login_success:
                     return json.dumps({
                         "error": "login_required",
-                        "message": "需要登录才能搜索酒店，请扫码登录后重试。截图已保存到 ~/.superbot/sessions/ctrip/login_qr.png"
+                        "message": "需要登录才能搜索酒店，请扫码登录后重试"
                     }, ensure_ascii=False)
-                # 4. 登录成功后，保存 Cookie
                 await self.session.save_cookies(page.context)
 
-            # 5. 搜索酒店
+            # 4. 搜索酒店
             try:
                 base_url = "https://hotels.ctrip.com/hotels/list"
                 params = f"?city={city}&checkin={checkin}&checkout={checkout}"
                 if keywords:
                     params += f"&keyword={keywords}"
-
                 search_url = base_url + params
-                logger.info(f"搜索酒店: {search_url}")
 
-                # 先访问首页，再访问酒店列表（避免反爬）
+                logger.info(f"搜索酒店: {search_url}")
                 await page.goto("https://www.ctrip.com", wait_until="domcontentloaded")
                 await asyncio.sleep(3)
                 await page.goto(search_url, wait_until="networkidle")
