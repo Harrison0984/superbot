@@ -11,27 +11,34 @@ from superbot.agent.tools.travel.ctrip import ctrip_monitor
 class FlightTool(Tool):
     """Search flights using Ctrip/Trip.com."""
 
-    name = "flight_search"
-    description = "搜索航班价格，支持出发城市、目的地和日期"
+    @property
+    def name(self) -> str:
+        return "flight_search"
 
-    parameters = {
-        "type": "object",
-        "properties": {
-            "from_city": {
-                "type": "string",
-                "description": "出发城市或机场代码，如：上海 或 SHA"
+    @property
+    def description(self) -> str:
+        return "搜索航班价格，支持出发城市、目的地和日期"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "from_city": {
+                    "type": "string",
+                    "description": "出发城市或机场代码，如：上海 或 SHA"
+                },
+                "to_city": {
+                    "type": "string",
+                    "description": "目的城市或机场代码，如：北京 或 PEK"
+                },
+                "date": {
+                    "type": "string",
+                    "description": "出发日期，格式：YYYY-MM-DD，如：2026-03-15"
+                }
             },
-            "to_city": {
-                "type": "string",
-                "description": "目的城市或机场代码，如：北京 或 PEK"
-            },
-            "date": {
-                "type": "string",
-                "description": "出发日期，格式：YYYY-MM-DD，如：2026-03-15"
-            }
-        },
-        "required": ["from_city", "to_city", "date"]
-    }
+            "required": ["from_city", "to_city", "date"]
+        }
 
     def __init__(self):
         self.browser = None
@@ -42,8 +49,11 @@ class FlightTool(Tool):
             await self.browser.initialize()
         return self.browser
 
-    async def execute(self, from_city: str, to_city: str, date: str, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str:
         """Execute flight search."""
+        from_city = kwargs.get("from_city", "")
+        to_city = kwargs.get("to_city", "")
+        date = kwargs.get("date", "")
         try:
             browser = await self._get_browser()
             page = await browser.new_page()
