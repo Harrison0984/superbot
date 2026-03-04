@@ -198,16 +198,67 @@ def onboard():
 
 
 
+def _create_local_provider(local_model, model: str):
+    """Create a local model provider (mlx or vllm)."""
+    from superbot.providers.custom_provider import CustomProvider
+    from superbot.providers.mlx_provider import MLXProvider
+
+    if local_model.provider == "mlx":
+        return MLXProvider(
+            api_key=None,
+            api_base=local_model.path,
+            default_model=model,
+        )
+    elif local_model.provider == "vllm":
+        return CustomProvider(
+            api_key="not-required",
+            api_base=local_model.path,
+            default_model=model,
+        )
+    else:
+        raise ValueError(f"Unsupported local model provider: {local_model.provider}")
+
+
 def _make_provider(config: Config):
-    """Create the appropriate LLM provider from config."""
+    """Create the appropriate LLM provider from config.
+
+    Priority:
+    1. localModel: if enabled, use local model (mlx or vllm)
+    2. agents.defaults.provider: use specified online provider
+    """
     from superbot.providers.custom_provider import CustomProvider
     from superbot.providers.litellm_provider import LiteLLMProvider
     from superbot.providers.minimax_provider import MiniMaxProvider
+    from superbot.providers.mlx_provider import MLXProvider
     from superbot.providers.openai_codex_provider import OpenAICodexProvider
 
     model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
+
+    # Priority 1: Check local model first
+    local_model = config.local_model
+    if local_model and local_model.enabled and local_model.path:
+        return _create_local_provider(local_model, model)
+
+    # Priority 2: Use agents.defaults.provider
+    provider_name = config.agents.defaults.provider
     p = config.get_provider(model)
+
+    # MLX: Apple Silicon local models
+    if provider_name == "mlx":
+        return MLXProvider(
+            api_key=p.api_key if p else None,
+            api_base=p.api_base if p and p.api_base else None,
+            default_model=model,
+        )
+
+    # vLLM: local model server
+    if provider_name == "vllm":
+        vllm_config = config.providers.vllm
+        return CustomProvider(
+            api_key=vllm_config.api_key if vllm_config.api_key else "not-required",
+            api_base=vllm_config.api_base if vllm_config.api_base else "http://localhost:8000/v1",
+            default_model=model,
+        )
 
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
@@ -221,14 +272,15 @@ def _make_provider(config: Config):
             default_model=model,
         )
 
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
+    # Custom: direct OpenAI-compatible endpoint
     if provider_name == "custom":
         return CustomProvider(
             api_key=p.api_key if p else "no-key",
-            api_base=config.get_api_base(model) or "http://localhost:8000/v1",
+            api_base=p.api_base if p and p.api_base else "http://localhost:8000/v1",
             default_model=model,
         )
 
+    # Fallback: LiteLLM for other providers
     from superbot.providers.registry import find_by_name
     spec = find_by_name(provider_name)
     if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):

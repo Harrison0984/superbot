@@ -101,8 +101,8 @@ class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = "~/.superbot/workspace"
-    model: str = "anthropic/claude-opus-4-5"
-    provider: str = "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
+    model: str = "MiniMax-M2.5"
+    provider: str = "minimax"  # Provider name (e.g. "minimax", "openai", "deepseek")
     max_tokens: int = 8192
     temperature: float = 0.1
     max_tool_iterations: int = 40
@@ -139,6 +139,7 @@ class ProvidersConfig(Base):
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
     moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
     minimax: ProviderConfig = Field(default_factory=ProviderConfig)
+    mlx: ProviderConfig = Field(default_factory=ProviderConfig)  # MLX (Apple Silicon local models)
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
     siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (硅基流动) API gateway
     volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎) API gateway
@@ -202,12 +203,21 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class LocalModelConfig(Base):
+    """Local model configuration."""
+
+    enabled: bool = False  # Enable local model
+    provider: str = "mlx"  # "mlx" or "vllm"
+    path: str = ""  # Path to local model (full path required)
+
+
 class Config(BaseSettings):
     """Root configuration for superbot."""
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    local_model: LocalModelConfig = Field(default_factory=LocalModelConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 

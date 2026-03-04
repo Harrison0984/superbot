@@ -1,56 +1,43 @@
 ## 🏗️ Architecture
 
+### Data Flow
+
 ```
-                          ┌─────────────────────────────────────────────────────┐
-                          │                    Chat Channels                    │
-                          │  ┌──────────┐ ┌──────────┐ ┌──────────┐           │
-                          │  │ Telegram │ │ WhatsApp │ │ Feishu  │           │
-                          │  └────┬─────┘ └────┬─────┘ └────┬─────┘           │
-                          │       │            │            │                  │
-                          │       │            │            │                  │
-                          │  ┌────┴────────────┴────────────┴────┐             │
-                          │  │           Message Bus              │             │
-                          │  │  ┌─────────────┐  ┌────────────┐ │             │
-                          │  │  │Inbound Queue│  │Outbound Q  │ │             │
-                          │  │  └─────────────┘  └────────────┘ │             │
-                          │  └─────────────────┬─────────────────┘             │
-                          └─────────────────────┼───────────────────────────────┘
-                                                │
-                                                ▼
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                            superbot Core                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                         Agent Loop                                   │    │
-│  │  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────────┐   │    │
-│  │  │ Context │───▶│  LLM     │───▶│  Tools  │───▶│  Response   │   │    │
-│  │  │ Memory  │    │ Provider │    │ Registry│    │  Generator  │   │    │
-│  │  └─────────┘    └─────────┘    └─────────┘    └─────────────┘   │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                                │
-                    ┌───────────────────────────┼───────────────────────────┐
-                    │                           │                           │
-                    ▼                           ▼                           ▼
-          ┌───────────────────        ┌───────────────────        ┌───────────────────┐
-          │    LLM Providers    │      │    Scheduled Tasks │      │    MCP Tools     │
-          │  • OpenAI          │      │  • Cron Jobs       │      │  • Filesystem    │
-          │  • Anthropic       │      │  • Heartbeat       │      │  • Shell         │
-          │  • OpenRouter      │      └───────────────────        │  • Web Fetch     │
-          │  • DeepSeek        │                                 │  • MCP Servers   │
-          │  • Groq            │                                 └───────────────────┘
-          │  • Zhipu           │
-          └───────────────────┘
+User Message (Telegram/WhatsApp/Feishu/Email/QQ)
+           │
+           ▼
+    ┌──────────────┐
+    │  Chat Bridge │  ────  Receives messages from various channels
+    └──────┬───────┘
+           │
+           ▼
+    ┌──────────────┐
+    │ Message Bus  │  ────  Async queue for inbound/outbound
+    └──────┬───────┘
+           │
+           ▼
+    ┌──────────────┐
+    │    Agent     │  ────  Core reasoning loop
+    │  ┌────────┐  │       1. Build context from memory
+    │  │ Memory │  │       2. Call LLM with tools
+    │  └────────┘  │       3. Execute tools if needed
+    └──────┬───────┘       4. Return response
+           │
+           ▼
+    ┌──────────────┐
+    │ LLM Provider │  ────  OpenAI / Anthropic / MiniMax / MLX (local)
+    └──────────────┘
 ```
 
-**Core Components:**
+### Core Components
 
 | Component | Description |
 |-----------|-------------|
-| **Chat Channels** | Adapters for Telegram, WhatsApp, Feishu, Email, QQ |
+| **Chat Bridges** | Adapters for Telegram, WhatsApp, Feishu, Email, QQ |
 | **Message Bus** | Async queue for inbound/outbound messages |
-| **Agent Loop** | Core reasoning loop with context, memory, and tool execution |
-| **LLM Providers** | Pluggable provider registry (OpenAI, Anthropic, OpenRouter, etc.) |
-| **Tools Registry** | Built-in tools (shell, filesystem, web) + MCP server support |
+| **Agent** | Core reasoning loop with context, memory, and tool execution |
+| **LLM Providers** | OpenAI, Anthropic, MiniMax, OpenRouter, MLX (Apple Silicon local), etc. |
+| **Tools** | Shell, filesystem, web search, MCP servers |
 | **Scheduled Tasks** | Cron-based job scheduling + heartbeat service |
 
 ## 📦 Install
@@ -78,8 +65,8 @@ pip install superbot-ai
 ## 🚀 Quick Start
 
 > [!TIP]
-> Set your API key in `~/.superbot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
+> Default provider is **MiniMax**. Set your API key in `~/.superbot/config.json`.
+> Get API keys: [MiniMax](https://platform.minimaxi.com) (China) · [OpenRouter](https://openrouter.ai/keys) (Global)
 
 **1. Initialize**
 
@@ -89,27 +76,42 @@ superbot onboard
 
 **2. Configure** (`~/.superbot/config.json`)
 
-Add or merge these **two parts** into your config (other options have defaults).
+Add your API key to the provider config:
 
-*Set your API key* (e.g. OpenRouter, recommended for global users):
+*MiniMax (default):*
+```json
+{
+  "providers": {
+    "minimax": {
+      "apiKey": "your-minimax-api-key"
+    }
+  }
+}
+```
+
+*Or use OpenRouter (global):*
 ```json
 {
   "providers": {
     "openrouter": {
       "apiKey": "sk-or-v1-xxx"
     }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "openrouter"
+    }
   }
 }
 ```
 
-*Set your model* (optionally pin a provider — defaults to auto-detection):
+*Or use local model (MLX on Apple Silicon):*
 ```json
 {
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-opus-4-5",
-      "provider": "openrouter"
-    }
+  "local_model": {
+    "enabled": true,
+    "provider": "mlx",
+    "path": "/path/to/your/mlx/model"
   }
 }
 ```
@@ -368,6 +370,7 @@ Config file: `~/.superbot/config.json`
 | `moonshot` | LLM (Moonshot/Kimi) | [platform.moonshot.cn](https://platform.moonshot.cn) |
 | `zhipu` | LLM (Zhipu GLM) | [open.bigmodel.cn](https://open.bigmodel.cn) |
 | `vllm` | LLM (local, any OpenAI-compatible server) | — |
+| `mlx` | LLM (Apple Silicon local models) | — |
 | `openai_codex` | LLM (Codex, OAuth) | `superbot provider login openai-codex` |
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `superbot provider login github-copilot` |
 
@@ -460,6 +463,40 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
   }
 }
 ```
+
+</details>
+
+<details>
+<summary><b>MLX (Apple Silicon Local Models)</b></summary>
+
+Run local LLMs directly on your Mac using Apple's MLX framework. Requires:
+- Apple Silicon Mac (M1/M2/M3/M4)
+- `mlx_lm` Python package
+
+**1. Install MLX:**
+```bash
+pip install mlx-lm
+```
+
+**2. Download a model** (e.g., from HuggingFace):
+```bash
+# Example: Qwen2.5-0.5B-Instruct-MLX
+git lfs install
+git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-MLX /path/to/Qwen-MLX
+```
+
+**3. Configure** (merge into `~/.superbot/config.json`):
+```json
+{
+  "local_model": {
+    "enabled": true,
+    "provider": "mlx",
+    "path": "/path/to/Qwen-MLX"
+  }
+}
+```
+
+> **Note:** `local_model` has higher priority than the default provider. If enabled, superbot will use the local model first. Set `enabled: false` to use the online provider specified in `agents.defaults.provider`.
 
 </details>
 
