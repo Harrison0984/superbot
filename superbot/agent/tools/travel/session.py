@@ -63,12 +63,17 @@ class SessionManager:
                     logger.info("User is logged in")
                     return True
 
-            # Check for APP login requirement (酒店页面会显示 APP 扫码)
-            app_login = await page.query_selector_all('[class*="app"], [class*="扫码"], text=re.compile("APP")')
-            for el in app_login:
-                if await el.is_visible():
-                    logger.info("APP login required, not logged in")
-                    return False
+            # Check for APP login requirement - just check basic selectors
+            app_login_selectors = ['[class*="app"]', '[class*="扫码"]', '[class*="APP"]']
+            for sel in app_login_selectors:
+                try:
+                    app_login = await page.query_selector_all(sel)
+                    for el in app_login:
+                        if await el.is_visible():
+                            logger.info("APP login required, not logged in")
+                            return False
+                except:
+                    pass
 
             # Check if explicitly logged in (has user info in URL or specific elements)
             # 如果页面需要登录但没有显示任何用户信息，才算未登录
