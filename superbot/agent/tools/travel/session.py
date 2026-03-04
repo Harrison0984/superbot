@@ -106,39 +106,46 @@ class SessionManager:
             logger.info(f"请扫码登录... (截图路径: {screenshot_path})")
             logger.info(f"等待登录... (超时 {timeout} 秒)")
 
-            # Wait for login
+            # Wait for login - check if QR code is gone (means logged in)
             start_time = asyncio.get_event_loop().time()
             while asyncio.get_event_loop().time() - start_time < timeout:
-                # Check if user info appears
+                # Check if QR code / login area is still visible
+                qr_element = await page.query_selector('.lg_ercode, [class*="ercode"], [class*="login-mask"]')
+                is_logged_in = False
+
+                if qr_element:
+                    is_visible = await qr_element.is_visible()
+                    if not is_visible:
+                        # QR code gone, likely logged in
+                        is_logged_in = True
+                        logger.info("检测到二维码消失，可能已登录")
+
+                # Also check for user info elements
                 user_elements = await page.query_selector_all(
-                    '[class*="user-name"], [class*="username"], [class*="user-info"]'
+                    '[class*="user-name"], [class*="username"], [class*="user-info"], [class*="user"], a[href*="profile"]'
                 )
                 for el in user_elements:
-                    if await el.is_visible():
-                        logger.info("✅ 登录成功!")
-                        # Save cookies
-                        context = page.context
-                        self.save_cookies(context)
-                        return True
-
-                # Check if login popup is gone
-                login_popup = await page.query_selector('[class*="login-mask"], [class*="login-modal"]')
-                if not login_popup or not await login_popup.is_visible():
-                    # Try visiting my page to verify
                     try:
-                        await page.goto("https://my.ctrip.com", wait_until="domcontentloaded", timeout=5000)
-                        await asyncio.sleep(2)
-                        user_elements = await page.query_selector_all(
-                            '[class*="user-name"], [class*="username"], [class*="user-info"]'
-                        )
-                        for el in user_elements:
-                            if await el.is_visible():
-                                logger.info("✅ 登录成功!")
-                                context = page.context
-                                self.save_cookies(context)
-                                return True
+                        if await el.is_visible():
+                            is_logged_in = True
+                            break
                     except:
                         pass
+
+                if is_logged_in:
+                    logger.info("✅ 登录成功!")
+                    # Save cookies
+                    context = page.context
+                    self.save_cookies(context)
+                    return True
+
+                # Check URL change - if navigated away from login page, likely logged in
+                current_url = page.url
+                if 'passport' not in current_url and 'login' not in current_url:
+                    logger.info(f"URL changed to {current_url}, assuming logged in")
+                    context = page.context
+                    self.save_cookies(context)
+                    return True
 
                 await asyncio.sleep(3)
 
