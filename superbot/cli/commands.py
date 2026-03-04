@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+import uuid
 from pathlib import Path
 
 import typer
@@ -490,11 +491,15 @@ def gateway(
 @app.command()
 def agent(
     message: str = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
-    session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
+    session_id: str | None = typer.Option(None, "--session", "-s", help="Session ID (default: random)"),
     markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show superbot runtime logs during chat"),
 ):
     """Interact with the agent directly."""
+    # Use random session ID by default to avoid loading previous conversation history
+    if session_id is None:
+        session_id = f"cli:{uuid.uuid4().hex[:8]}"
+
     from loguru import logger
 
     from superbot.agent.loop import AgentLoop
