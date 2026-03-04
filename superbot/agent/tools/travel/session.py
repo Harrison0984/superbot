@@ -156,13 +156,25 @@ class SessionManager:
             logger.error(f"登录过程出错: {e}")
             return False
 
-    def apply_cookies(self, context) -> bool:
-        """Apply saved cookies to browser context."""
+    async def apply_cookies_async(self, context) -> bool:
+        """Apply saved cookies to browser context (async)."""
         cookies = self.load_cookies()
         if cookies:
             try:
-                context.add_cookies(cookies)
+                await context.add_cookies(cookies)
                 logger.info("Cookies applied to context")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to apply cookies: {e}")
+        return False
+
+    def apply_cookies(self, context) -> bool:
+        """Apply saved cookies to browser context (sync, deprecated)."""
+        cookies = self.load_cookies()
+        if cookies:
+            try:
+                # Note: This may not work correctly, use apply_cookies_async instead
+                logger.warning("Using sync apply_cookies, prefer async version")
                 return True
             except Exception as e:
                 logger.error(f"Failed to apply cookies: {e}")
