@@ -6,6 +6,10 @@ from typing import Any
 from superbot.agent.tools.base import Tool
 from superbot.agent.tools.travel.browser import StealthBrowser
 from superbot.agent.tools.travel.ctrip import ctrip_monitor
+from superbot.agent.tools.travel.session import get_session_manager
+from superbot.agent.tools.travel.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class FlightTool(Tool):
@@ -42,6 +46,7 @@ class FlightTool(Tool):
 
     def __init__(self):
         self.browser = None
+        self.session = get_session_manager()
 
     async def _get_browser(self):
         if self.browser is None:
@@ -54,9 +59,24 @@ class FlightTool(Tool):
         from_city = kwargs.get("from_city", "")
         to_city = kwargs.get("to_city", "")
         date = kwargs.get("date", "")
+
         try:
             browser = await self._get_browser()
             page = await browser.new_page()
+
+            # Apply saved cookies if available
+            if self.session.has_session():
+                self.session.apply_cookies(page.context)
+
+            # Check login status first
+            if not await self.session.check_login(page):
+                logger.info("User not logged in, waiting for login...")
+                login_success = await self.session.wait_for_login(page)
+                if not login_success:
+                    return json.dumps({
+                        "error": "login_required",
+                        "message": "需要登录才能搜索航班，请扫码登录后重试"
+                    }, ensure_ascii=False)
 
             try:
                 # Convert city name to airport code if needed (3-letter uppercase = airport code)
