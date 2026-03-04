@@ -49,42 +49,34 @@ class SessionManager:
         return self.cookie_path.exists()
 
     async def check_login(self, page: Page) -> bool:
-        """Check if user is logged in by visiting a protected page."""
+        """Check if user is logged in by checking for login QR code on current page."""
         try:
-            await page.goto("https://my.ctrip.com", wait_until="domcontentloaded", timeout=10000)
-            await asyncio.sleep(2)
+            # 检查当前页面是否有登录二维码/登录弹窗
+            # 如果没有二维码，说明已登录（或者页面不需要登录）
 
-            # Check for user info element (indicates logged in)
-            user_elements = await page.query_selector_all(
-                '[class*="user-name"], [class*="username"], [class*="user-info"], [class*="login-success"]'
-            )
-            for el in user_elements:
-                if await el.is_visible():
-                    logger.info("User is logged in")
-                    return True
+            qr_selectors = [
+                '[class*="qrcode"]',
+                '[class*="ercode"]',
+                '[class*="login-mask"]',
+                '[class*="login-modal"]',
+                '.lg_ercode'
+            ]
 
-            # Check for APP login requirement - just check basic selectors
-            app_login_selectors = ['[class*="app"]', '[class*="扫码"]', '[class*="APP"]']
-            for sel in app_login_selectors:
+            for sel in qr_selectors:
                 try:
-                    app_login = await page.query_selector_all(sel)
-                    for el in app_login:
-                        if await el.is_visible():
-                            logger.info("APP login required, not logged in")
-                            return False
+                    el = await page.query_selector(sel)
+                    if el and await el.is_visible():
+                        logger.info(f"Found login QR code: {sel}, not logged in")
+                        return False
                 except:
                     pass
 
-            # Check if explicitly logged in (has user info in URL or specific elements)
-            # 如果页面需要登录但没有显示任何用户信息，才算未登录
-            # 但如果页面根本不需要登录（如航班搜索），会显示内容
-
-            # 简化：只有找到用户信息才算已登录
-            logger.info("No user info found, not logged in")
-            return False
+            # 没有找到登录二维码，认为已登录
+            logger.info("No login QR code found, assuming logged in")
+            return True
         except Exception as e:
             logger.warning(f"Error checking login: {e}")
-            return False
+            return True  # 出错时默认已登录
 
     async def wait_for_login(self, page: Page, timeout: int = 120) -> bool:
         """Wait for user to scan QR code and login.
