@@ -150,31 +150,24 @@ class CtripMonitor:
         screenshot_path = screenshot_dir / "ctrip_login.png"
 
         try:
-            # 尝试找到二维码区域并截图
-            qr_selectors = [
-                '[class*="qrcode"]',
-                '[class*="qr-code"]',
-                '[class*="QRCode"]',
-                '#qrcode',
-                '.login-qrcode',
-            ]
+            # 先尝试点击"扫码登录"按钮，让二维码显示出来
+            scan_login = await page.query_selector('a:has-text("扫码登录"), a:has-text("扫码")')
+            if scan_login:
+                logger.info("点击扫码登录按钮...")
+                await scan_login.click()
+                await asyncio.sleep(5)  # 等待二维码生成
 
-            qr_element = None
-            for selector in qr_selectors:
-                qr_element = await page.query_selector(selector)
-                if qr_element:
-                    break
-
+            # 截图二维码区域
+            qr_element = await page.query_selector('.lg_ercode, [class*="ercode"]')
             if qr_element:
-                # 截取二维码区域
                 await qr_element.screenshot(path=str(screenshot_path))
                 logger.info(f"📱 二维码截图已保存到: {screenshot_path}")
             else:
-                # 如果没找到二维码，整个页面
+                # 如果没找到二维码区域，截图整个页面
                 await page.screenshot(path=str(screenshot_path), full_page=True)
                 logger.info(f"📱 登录页面截图已保存到: {screenshot_path}")
 
-            logger.info(f"请扫描二维码登录... (截图路径: {screenshot_path})")
+            logger.info(f"请扫码登录... (截图路径: {screenshot_path})")
         except Exception as e:
             logger.warning(f"截图失败: {e}")
 
