@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from superbot.agent.tools.base import Tool
-from superbot.agent.tools.travel.browser import StealthBrowser
+from superbot.agent.tools.travel.shared import get_shared_browser
 from superbot.agent.tools.travel.session import get_session_manager
 from superbot.agent.tools.travel.logger import get_logger
 
@@ -49,14 +49,10 @@ class HotelTool(Tool):
         }
 
     def __init__(self):
-        self.browser = None
         self.session = get_session_manager()
 
     async def _get_browser(self):
-        if self.browser is None:
-            self.browser = StealthBrowser()
-            await self.browser.initialize()
-        return self.browser
+        return await get_shared_browser()
 
     async def _extract_hotels(self, page) -> list:
         """Extract hotel data from page."""
