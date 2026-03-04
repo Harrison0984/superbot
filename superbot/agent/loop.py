@@ -22,6 +22,8 @@ from superbot.agent.tools.registry import ToolRegistry
 from superbot.agent.tools.shell import ExecTool
 from superbot.agent.tools.spawn import SpawnTool
 from superbot.agent.tools.web import WebFetchTool, WebSearchTool
+from superbot.agent.tools.travel.flight import FlightTool
+from superbot.agent.tools.travel.hotel import HotelTool
 from superbot.bus.events import InboundMessage, OutboundMessage
 from superbot.bus.queue import MessageBus
 from superbot.providers.base import LLMProvider
@@ -125,6 +127,8 @@ class AgentLoop:
         ))
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
+        self.tools.register(FlightTool())
+        self.tools.register(HotelTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
