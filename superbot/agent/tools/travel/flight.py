@@ -64,22 +64,25 @@ class FlightTool(Tool):
             browser = await self._get_browser()
             page = await browser.new_page()
 
-            # Apply saved cookies if available
-            if self.session.has_session():
-                self.session.apply_cookies(page.context)
+            # 严格流程：必须先登录
+            # 1. 先访问登录页面，让用户扫码
+            # 2. 等待登录成功
+            # 3. 保存 Cookie
+            # 4. 然后才进行搜索
 
-            # Check login status first
-            if not await self.session.check_login(page):
-                logger.info("User not logged in, waiting for login...")
-                login_success = await self.session.wait_for_login(page)
-                if not login_success:
-                    return json.dumps({
-                        "error": "login_required",
-                        "message": "需要登录才能搜索航班，请扫码登录后重试"
-                    }, ensure_ascii=False)
+            logger.info("开始登录流程...")
+            login_success = await self.session.wait_for_login(page, timeout=120)
+            if not login_success:
+                return json.dumps({
+                    "error": "login_required",
+                    "message": "需要登录才能搜索航班，请扫码登录后重试。截图已保存到 ~/.superbot/sessions/ctrip/login_qr.png"
+                }, ensure_ascii=False)
 
+            # 登录成功后，保存 Cookie
+            self.session.save_cookies(page.context)
+
+            # 5. 登录成功后，进行搜索
             try:
-                # Convert city name to airport code if needed (3-letter uppercase = airport code)
                 from_code = from_city.upper() if len(from_city) == 3 else from_city
                 to_code = to_city.upper() if len(to_city) == 3 else to_city
 
