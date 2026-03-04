@@ -79,7 +79,7 @@ class FlightTool(Tool):
                 }, ensure_ascii=False)
 
             # 登录成功后，保存 Cookie
-            self.session.save_cookies(page.context)
+            await self.session.save_cookies(page.context)
 
             # 5. 登录成功后，进行搜索
             try:

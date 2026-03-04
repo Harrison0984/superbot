@@ -22,10 +22,10 @@ class SessionManager:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.cookie_path = self.session_dir / "cookies.json"
 
-    def save_cookies(self, context) -> bool:
+    async def save_cookies(self, context) -> bool:
         """Save cookies from browser context."""
         try:
-            cookies = context.cookies()
+            cookies = await context.cookies()
             with open(self.cookie_path, "w") as f:
                 json.dump(cookies, f)
             logger.info(f"Cookies saved to {self.cookie_path}")
@@ -136,7 +136,7 @@ class SessionManager:
                     logger.info("✅ 登录成功!")
                     # Save cookies
                     context = page.context
-                    self.save_cookies(context)
+                    await self.save_cookies(context)
                     return True
 
                 # Check URL change - if navigated away from login page, likely logged in
@@ -144,7 +144,7 @@ class SessionManager:
                 if 'passport' not in current_url and 'login' not in current_url:
                     logger.info(f"URL changed to {current_url}, assuming logged in")
                     context = page.context
-                    self.save_cookies(context)
+                    await self.save_cookies(context)
                     return True
 
                 await asyncio.sleep(3)
