@@ -202,6 +202,7 @@ def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from superbot.providers.custom_provider import CustomProvider
     from superbot.providers.litellm_provider import LiteLLMProvider
+    from superbot.providers.minimax_provider import MiniMaxProvider
     from superbot.providers.openai_codex_provider import OpenAICodexProvider
 
     model = config.agents.defaults.model
@@ -211,6 +212,14 @@ def _make_provider(config: Config):
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=model)
+
+    # MiniMax: use native API (LiteLLM has authentication issues)
+    if provider_name == "minimax":
+        return MiniMaxProvider(
+            api_key=p.api_key if p else None,
+            api_base=p.api_base if p and p.api_base else None,
+            default_model=model,
+        )
 
     # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
     if provider_name == "custom":
