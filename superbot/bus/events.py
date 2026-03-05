@@ -36,3 +36,15 @@ class OutboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ToolEvent:
+    """Tool internal event sent to Agent."""
+    session_key: str        # 哪个会话的任务
+    task_id: str            # 任务唯一标识
+    tool_name: str          # 工具名称
+    event_type: str         # "waiting" | "progress" | "complete" | "error"
+    content: str            # 消息内容
+    media: list[str] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+
