@@ -98,6 +98,7 @@ class MiniMaxProvider(LLMProvider):
             )
             response.raise_for_status()
             data = response.json()
+            logger.debug("MiniMax response: {}", json.dumps(data, ensure_ascii=False)[:500])
             return self._parse_response(data)
         except requests.exceptions.Timeout:
             return LLMResponse(
@@ -131,15 +132,28 @@ class MiniMaxProvider(LLMProvider):
 
     def _parse_response(self, data: dict[str, Any]) -> LLMResponse:
         """Parse MiniMax native API response."""
-        choice = data.get("choices", [{}])[0]
-        message = choice.get("message", {})
+        if not data:
+            logger.error("MiniMax response data is empty or None")
+            return LLMResponse(content="Error: Empty response from MiniMax", finish_reason="error")
+
+        choices = data.get("choices")
+        if not choices:
+            logger.error("MiniMax response has no choices: {}", data)
+            return LLMResponse(content="Error: No choices in MiniMax response", finish_reason="error")
+
+        choice = choices[0]
+        if not choice:
+            logger.error("MiniMax response first choice is empty: {}", data)
+            return LLMResponse(content="Error: Empty choice in MiniMax response", finish_reason="error")
+
+        message = choice.get("message", {}) if choice else {}
 
         content = message.get("content", "")
         reasoning = message.get("reasoning_content")
 
         # Parse tool calls if present
         tool_calls = []
-        raw_tool_calls = message.get("tool_calls", [])
+        raw_tool_calls = message.get("tool_calls", []) or []
         for tc in raw_tool_calls:
             func = tc.get("function", {})
             args = func.get("arguments", {})
@@ -154,10 +168,12 @@ class MiniMaxProvider(LLMProvider):
 
         usage = data.get("usage", {})
 
+        finish_reason = choice.get("finish_reason") if choice else "stop"
+
         return LLMResponse(
             content=content,
             tool_calls=tool_calls,
-            finish_reason=choice.get("finish_reason", "stop"),
+            finish_reason=finish_reason,
             usage={
                 "prompt_tokens": usage.get("prompt_tokens", 0),
                 "completion_tokens": usage.get("completion_tokens", 0),
