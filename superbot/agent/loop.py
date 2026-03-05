@@ -7,6 +7,7 @@ import json
 import re
 import weakref
 from contextlib import AsyncExitStack
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -24,7 +25,7 @@ from superbot.agent.tools.spawn import SpawnTool
 from superbot.agent.tools.web import WebFetchTool, WebSearchTool
 from superbot.agent.tools.travel.flight import FlightTool
 from superbot.agent.tools.travel.hotel import HotelTool
-from superbot.bus.events import InboundMessage, OutboundMessage
+from superbot.bus.events import InboundMessage, OutboundMessage, ToolEvent
 from superbot.bus.queue import MessageBus
 from superbot.providers.base import LLMProvider
 from superbot.session.manager import Session, SessionManager
@@ -128,7 +129,10 @@ class AgentLoop:
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(FlightTool())
+        self.tools.get("flight_search").set_bus(self.bus)
+
         self.tools.register(HotelTool())
+        self.tools.get("hotel_search").set_bus(self.bus)
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
@@ -306,16 +310,48 @@ class AgentLoop:
 
         while self._running:
             try:
-                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
+                # 同时监听 inbound 和 tool_events
+                tasks = [
+                    asyncio.create_task(self.bus.consume_inbound()),
+                    asyncio.create_task(self.bus.tool_events.get())
+                ]
+                done, pending = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
 
-            if msg.content.strip().lower() == "/stop":
-                await self._handle_stop(msg)
-            else:
-                task = asyncio.create_task(self._dispatch(msg))
-                self._active_tasks.setdefault(msg.session_key, []).append(task)
-                task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
+                # 取消未完成的任务
+                for t in pending:
+                    t.cancel()
+
+                for task in done:
+                    try:
+                        result = task.result()
+                    except asyncio.CancelledError:
+                        continue
+
+                    if isinstance(result, ToolEvent):
+                        # 处理工具事件
+                        asyncio.create_task(self._handle_tool_event(result))
+                    else:
+                        # 处理用户消息
+                        msg = result
+                        if msg.content.strip().lower() == "/stop":
+                            await self._handle_stop(msg)
+                        else:
+                            task = asyncio.create_task(self._dispatch(msg))
+                            self._active_tasks.setdefault(msg.session_key, []).append(task)
+                            task.add_done_callback(
+                                lambda t, k=msg.session_key:
+                                self._active_tasks.get(k, []) and
+                                self._active_tasks[k].remove(t)
+                                if t in self._active_tasks.get(k, []) else None
+                            )
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error in agent loop")
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""
@@ -332,6 +368,36 @@ class AgentLoop:
         await self.bus.publish_outbound(OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=content,
         ))
+
+    async def _handle_tool_event(self, event: ToolEvent) -> None:
+        """Handle tool events from background tasks."""
+        if event.event_type == "progress":
+            # 附加到会话 metadata，不单独发消息给用户
+            session = self.sessions.get_or_create(event.session_key)
+            session.metadata.setdefault("_tool_progress", {})[event.task_id] = {
+                "tool": event.tool_name,
+                "message": event.content,
+                "timestamp": datetime.now().isoformat()
+            }
+            logger.debug("Tool progress: {} - {}", event.tool_name, event.content)
+
+        elif event.event_type in ("complete", "error"):
+            # 包装成新消息，触发 LLM 继续处理
+            message = InboundMessage(
+                channel="system:tool",
+                sender_id=event.tool_name,
+                chat_id=event.session_key,
+                content=event.content,
+                metadata={
+                    "_tool_event": True,
+                    "task_id": event.task_id,
+                    "event_type": event.event_type,
+                    "original_session": event.session_key,
+                    "media": event.media
+                }
+            )
+            await self.bus.publish_inbound(message)
+            logger.info("Tool {} event: {}", event.event_type, event.tool_name)
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
