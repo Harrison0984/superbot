@@ -25,6 +25,7 @@ from superbot.agent.tools.spawn import SpawnTool
 from superbot.agent.tools.web import WebFetchTool, WebSearchTool
 from superbot.agent.tools.travel.flight import FlightTool
 from superbot.agent.tools.travel.hotel import HotelTool
+from superbot.agent.tools.feishu_doc import FeishuDocTool
 from superbot.bus.events import InboundMessage, OutboundMessage, ToolEvent
 from superbot.bus.queue import MessageBus
 from superbot.providers.base import LLMProvider
@@ -134,6 +135,7 @@ class AgentLoop:
         self.tools.register(HotelTool())
         self.tools.get("hotel_search").set_bus(self.bus)
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
+        self.tools.register(FeishuDocTool(config=self.channels_config.feishu if self.channels_config else None))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
@@ -215,6 +217,11 @@ class AgentLoop:
         on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict], list[str]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages, user_media)."""
+        # Limit messages to prevent token overflow
+        max_history = self.memory_window
+        if len(initial_messages) > max_history:
+            initial_messages = initial_messages[-max_history:]
+
         messages = initial_messages
         iteration = 0
         final_content = None
@@ -295,8 +302,11 @@ class AgentLoop:
                     try:
                         result_data = json.loads(result)
                         if isinstance(result_data, dict) and result_data.get("_tool_background"):
-                            # 后台任务正在运行，立即返回，不阻塞
+                            # 后台任务正在运行，需要添加工具结果到消息历史
                             logger.info("Tool {} running in background", tool_call.name)
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, result
+                            )
                             return "正在处理中，请稍候...", tools_used, messages, []
                     except (json.JSONDecodeError, TypeError):
                         pass
@@ -418,22 +428,59 @@ class AgentLoop:
             logger.debug("Tool progress: {} - {}", event.tool_name, event.content)
 
         elif event.event_type in ("complete", "error"):
-            # 包装成新消息，触发 LLM 继续处理
-            message = InboundMessage(
-                channel="system:tool",
-                sender_id=event.tool_name,
-                chat_id=event.session_key,
-                content=event.content,
-                metadata={
-                    "_tool_event": True,
-                    "task_id": event.task_id,
-                    "event_type": event.event_type,
-                    "original_session": event.session_key,
-                    "media": event.media
-                }
-            )
-            await self.bus.publish_inbound(message)
+            # 直接处理工具结果，而不是通过 bus
             logger.info("Tool {} event: {}", event.event_type, event.tool_name)
+            await self._handle_tool_result(event)
+
+    async def _handle_tool_result(self, event: ToolEvent) -> None:
+        """Handle tool result and continue conversation with LLM."""
+        # 解析 session_key 获取 channel 和 chat_id
+        parts = event.session_key.split(":", 1) if ":" in event.session_key else ("cli", event.session_key)
+        channel, chat_id = parts[0], parts[1] if len(parts) > 1 else event.session_key
+
+        try:
+            # 获取会话
+            session = self.sessions.get_or_create(event.session_key)
+
+            # 添加工具结果到会话
+            session.add_message(
+                role="system",
+                content=f"[{event.tool_name}]: {event.content}"
+            )
+
+            # 获取历史并构建消息
+            history = session.get_history(max_messages=self.memory_window)
+            messages = self.context.build_messages(
+                history=history,
+                current_message=f"工具 {event.tool_name} 已完成: {event.content}",
+                channel=channel,
+                chat_id=chat_id,
+            )
+
+            # 设置工具上下文
+            self._set_tool_context(channel, chat_id)
+
+            # 运行 agent 获取回复
+            final_content, _, all_msgs, _ = await self._run_agent_loop(messages, event.session_key)
+
+            # 保存到会话
+            self._save_turn(session, all_msgs, len(history))
+            self.sessions.save(session)
+
+            # 发送回复给用户
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=final_content or "任务已完成"
+            ))
+        except Exception as e:
+            logger.error("Error handling tool result: %s", e)
+            # 发送错误消息给用户
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=f"处理工具结果时出错: {str(e)}"
+            ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
@@ -597,11 +644,17 @@ class AgentLoop:
         )
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
+        """Save new-turn messages into session, truncating large tool results.
+
+        All messages are kept in memory for the current conversation (including tool
+        results). Tool messages are filtered out only when persisting to disk.
+        """
         from datetime import datetime
+
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
+
             if role == "assistant" and not content and not entry.get("tool_calls"):
                 continue  # skip empty assistant messages — they poison session context
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:

@@ -28,15 +28,52 @@ class StealthStrategy:
 
 
 class WebDriverHidden(StealthStrategy):
-    """Hides the webdriver property."""
+    """Hides the webdriver property and other automation features."""
 
     async def apply(self, page: Page) -> None:
         await page.add_init_script("""
+            // Hide webdriver
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
+
+            // Hide automation flags
+            Object.defineProperty(navigator, 'automation', {
+                get: () => undefined
+            });
+
+            // Override chrome runtime
+            if (window.chrome) {
+                window.chrome.runtime = {
+                    connect: () => {},
+                    id: ''
+                };
+            }
+
+            // Mask permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+
+            // Mask plugins (return non-empty list)
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+
+            // Mask languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['zh-CN', 'zh', 'en-US', 'en']
+            });
+
+            // Prevent CDP injection detection
+            window.cdc_adoQpoasnfa76pfcZLmcfl_Array = true;
+            window.cdc_adoQpoasnfa76pfcZLmcfl_Promise = true;
+            window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol = true;
         """)
-        logger.debug("Applied webdriver hiding")
+        logger.debug("Applied webdriver and automation feature hiding")
 
 
 class CanvasFingerprintRandomizer(StealthStrategy):
@@ -69,13 +106,19 @@ class CanvasFingerprintRandomizer(StealthStrategy):
 
 
 class WebGLStealth(StealthStrategy):
-    """Masks WebGL fingerprint."""
+    """Masks and randomizes WebGL fingerprint."""
 
     async def apply(self, page: Page) -> None:
+        # Randomize WebGL vendor and renderer
+        vendors = ['Intel Inc.', 'NVIDIA Corporation', 'Apple Inc.', 'AMD']
+        renderers = ['Intel Iris OpenGL Engine', 'NVIDIA GeForce GTX 1060', 'Apple M1', 'AMD Radeon Pro']
+        vendor = random.choice(vendors)
+        renderer = random.choice(renderers)
+
         await page.add_init_script("""
             const glParams = {
-                37445: 'Intel Inc.',
-                37446: 'Intel Iris OpenGL Engine',
+                37445: '""" + vendor + """',
+                37446: '""" + renderer + """',
                 37487: 'WebGL GLSL ES 3.00',
             };
 
@@ -86,8 +129,17 @@ class WebGLStealth(StealthStrategy):
                 }
                 return originalGetParameter.apply(this, arguments);
             };
+
+            // Also mask WebGL2
+            const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                if (glParams.hasOwnProperty(parameter)) {
+                    return glParams[parameter];
+                }
+                return originalGetParameter2.apply(this, arguments);
+            }};
         """)
-        logger.debug("Applied WebGL stealth")
+        logger.debug("Applied WebGL stealth with randomization")
 
 
 class AudioContextStealth(StealthStrategy):
@@ -112,7 +164,7 @@ class AudioContextStealth(StealthStrategy):
 
 
 class UserAgentSpoofing(StealthStrategy):
-    """Spoofs user agent to match proxy location."""
+    """Spoofs user agent and request headers."""
 
     def __init__(self):
         super().__init__()
@@ -122,16 +174,70 @@ class UserAgentSpoofing(StealthStrategy):
         )
 
     async def apply(self, page: Page) -> None:
-        # Set additional navigator properties
+        # Set additional navigator properties and request headers
         await page.add_init_script(f"""
+            // Navigator properties
             Object.defineProperty(navigator, 'hardwareConcurrency', {{
                 get: () => {random.randint(4, 8)}
             }});
             Object.defineProperty(navigator, 'deviceMemory', {{
                 get: () => {random.choice([4, 8, 16])}
             }});
+            Object.defineProperty(navigator, 'maxTouchPoints', {{
+                get: () => 0
+            }});
+
+            // Platform
+            Object.defineProperty(navigator, 'platform', {{
+                get: () => 'MacIntel'
+            }});
+
+            // DoNotTrack
+            Object.defineProperty(navigator, 'doNotTrack', {{
+                get: () => '1'
+            }});
+
+            // Connection saveData
+            if (navigator.connection) {{
+                Object.defineProperty(navigator.connection, 'saveData', {{
+                    get: () => false
+                }});
+            }}
+
+            // Add sec-ch-ua headers via interceptor
+            const originalFetch = window.fetch;
+            window.fetch = async function(...args) {{
+                const [resource, config] = args;
+                const newConfig = config || {{}};
+                newConfig.headers = newConfig.headers || {{}};
+
+                // Add stealth headers
+                newConfig.headers['sec-ch-ua'] = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
+                newConfig.headers['sec-ch-ua-mobile'] = '?0';
+                newConfig.headers['sec-ch-ua-platform'] = '"macOS"';
+                newConfig.headers['Sec-Fetch-Dest'] = 'document';
+                newConfig.headers['Sec-Fetch-Mode'] = 'navigate';
+                newConfig.headers['Sec-Fetch-Site'] = 'none';
+                newConfig.headers['Sec-Fetch-User'] = '?1';
+                newConfig.headers['Upgrade-Insecure-Requests'] = '1';
+
+                return originalFetch.apply(this, [resource, newConfig]);
+            }};
+
+            const originalXHROpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+                this.setRequestHeader('sec-ch-ua', '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"');
+                this.setRequestHeader('sec-ch-ua-mobile', '?0');
+                this.setRequestHeader('sec-ch-ua-platform', '"macOS"');
+                this.setRequestHeader('Sec-Fetch-Dest', 'document');
+                this.setRequestHeader('Sec-Fetch-Mode', 'navigate');
+                this.setRequestHeader('Sec-Fetch-Site', 'none');
+                this.setRequestHeader('Sec-Fetch-User', '?1');
+                this.setRequestHeader('Upgrade-Insecure-Requests', '1');
+                return originalXHROpen.apply(this, [method, url, ...rest]);
+            }};
         """)
-        logger.debug("Applied user agent spoofing")
+        logger.debug("Applied user agent and request header spoofing")
 
 
 class RetryStrategy:

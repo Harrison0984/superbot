@@ -50,6 +50,20 @@ class MiniMaxProvider(LLMProvider):
         self.default_model = default_model
         self.api_base = api_base or "https://api.minimaxi.com/v1"
 
+    @staticmethod
+    def _convert_system_to_user(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert system role to user role since MiniMax doesn't support system messages."""
+        result = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                # Convert system to user
+                converted = dict(msg)
+                converted["role"] = "user"
+                result.append(converted)
+            else:
+                result.append(msg)
+        return result
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -62,6 +76,8 @@ class MiniMaxProvider(LLMProvider):
         """Send a chat completion request via MiniMax native API."""
         model = model or self.default_model
         messages = self._sanitize_empty_content(messages)
+        # MiniMax doesn't support system role, convert to user message
+        messages = self._convert_system_to_user(messages)
 
         # Debug: log message structure
         logger.debug("MiniMax request messages count: {}", len(messages))
@@ -104,6 +120,9 @@ class MiniMaxProvider(LLMProvider):
             )
             response.raise_for_status()
             data = response.json()
+            logger.debug("MiniMax response keys: {}", list(data.keys()))
+            if "error" in data:
+                logger.warning("MiniMax response contains error: {}", data.get("error"))
             logger.debug("MiniMax response: {}", json.dumps(data, ensure_ascii=False)[:500])
             return self._parse_response(data)
         except requests.exceptions.Timeout:
@@ -141,6 +160,12 @@ class MiniMaxProvider(LLMProvider):
         if not data:
             logger.error("MiniMax response data is empty or None")
             return LLMResponse(content="Error: Empty response from MiniMax", finish_reason="error")
+
+        # Check for API-level errors in response body
+        if error := data.get("error"):
+            error_msg = error.get("message", str(error))
+            logger.error("MiniMax API error: {}", error_msg)
+            return LLMResponse(content=f"Error from MiniMax: {error_msg}", finish_reason="error")
 
         choices = data.get("choices")
         if not choices:

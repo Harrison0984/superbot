@@ -43,7 +43,11 @@ class Session:
         self.updated_at = datetime.now()
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        """Return unconsolidated messages for LLM input, aligned to a user turn."""
+        """Return unconsolidated messages for LLM input, aligned to a user turn.
+
+        Returns all messages including tool results - they are needed for the current
+        conversation flow. Tool messages are filtered out only when persisting to disk.
+        """
         unconsolidated = self.messages[self.last_consolidated:]
         sliced = unconsolidated[-max_messages:]
 
@@ -55,7 +59,15 @@ class Session:
 
         out: list[dict[str, Any]] = []
         for m in sliced:
-            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
+            role = m.get("role")
+
+            # Skip tool messages that have no valid tool_call_id (orphaned)
+            if role == "tool":
+                if not m.get("tool_call_id"):
+                    continue
+                # Could add validation here if needed
+
+            entry: dict[str, Any] = {"role": role, "content": m.get("content", "")}
             for k in ("tool_calls", "tool_call_id", "name"):
                 if k in m:
                     entry[k] = m[k]
@@ -160,7 +172,11 @@ class SessionManager:
             return None
 
     def save(self, session: Session) -> None:
-        """Save a session to disk."""
+        """Save a session to disk.
+
+        Note: Tool messages (role=tool) and assistant messages with tool_calls are
+        NOT persisted - they are session-scoped only and cleared on new session.
+        """
         path = self._get_session_path(session.key)
 
         with open(path, "w", encoding="utf-8") as f:
@@ -174,6 +190,12 @@ class SessionManager:
             }
             f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
             for msg in session.messages:
+                # Skip tool messages and assistant messages with tool_calls
+                role = msg.get("role")
+                if role == "tool":
+                    continue
+                if role == "assistant" and msg.get("tool_calls"):
+                    continue
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
         self._cache[session.key] = session

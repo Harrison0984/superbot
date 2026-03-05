@@ -62,8 +62,8 @@ class StealthBrowser:
         """Get stealth options for the browser context (valid Playwright options only)."""
         # Only return options that are valid for new_context()
         options = {
-            "locale": self.stealth_config.get("languages", ["en-US", "en"])[0],
-            "timezone_id": "America/New_York",
+            "locale": self.stealth_config.get("languages", ["zh-CN", "zh"])[0],
+            "timezone_id": "Asia/Shanghai",
         }
 
         return options
