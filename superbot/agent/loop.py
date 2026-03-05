@@ -238,7 +238,19 @@ class AgentLoop:
                     clean = self._strip_think(response.content)
                     if clean:
                         await on_progress(clean)
-                    await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+                    if response.tool_calls:
+                        await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+
+                if not response.tool_calls:
+                    logger.warning("has_tool_calls is True but tool_calls is None")
+                    response.has_tool_calls = False
+                    clean = self._strip_think(response.content)
+                    messages = self.context.add_assistant_message(
+                        messages, clean, reasoning_content=response.reasoning_content,
+                        thinking_blocks=response.thinking_blocks,
+                    )
+                    final_content = clean
+                    break
 
                 tool_call_dicts = [
                     {
