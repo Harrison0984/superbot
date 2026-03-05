@@ -58,11 +58,6 @@ class HotelTool(Tool):
     def __init__(self):
         self.session = get_session_manager()
 
-    def _emit_event(self, event: ToolEvent):
-        """发送事件到事件总线"""
-        from superbot.bus import event_bus
-        event_bus.emit(event)
-
     async def _get_browser(self):
         return await get_shared_browser()
 
