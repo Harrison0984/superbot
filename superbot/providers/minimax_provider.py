@@ -10,6 +10,7 @@ import string
 from typing import Any
 
 import requests
+from loguru import logger
 
 from superbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
