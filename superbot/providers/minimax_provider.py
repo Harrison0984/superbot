@@ -63,6 +63,11 @@ class MiniMaxProvider(LLMProvider):
         model = model or self.default_model
         messages = self._sanitize_empty_content(messages)
 
+        # Debug: log message structure
+        logger.debug("MiniMax request messages count: {}", len(messages))
+        for i, msg in enumerate(messages[-3:]):  # Last 3 messages
+            logger.debug("Message {}: role={}, has_tool_calls={}", i, msg.get("role"), "tool_calls" in msg)
+
         # Build request payload for MiniMax native API
         payload: dict[str, Any] = {
             "model": model,
