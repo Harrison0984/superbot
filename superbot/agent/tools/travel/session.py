@@ -78,6 +78,30 @@ class SessionManager:
             logger.warning(f"Error checking login: {e}")
             return True  # 出错时默认已登录
 
+    async def check_login_async(self, page: Page) -> bool:
+        """Check if user is logged in (standalone, doesn't require page navigation)."""
+        try:
+            qr_selectors = [
+                '[class*="qrcode"]',
+                '[class*="ercode"]',
+                '[class*="login-mask"]',
+                '[class*="login-modal"]',
+                '.lg_ercode'
+            ]
+
+            for sel in qr_selectors:
+                try:
+                    el = await page.query_selector(sel)
+                    if el and await el.is_visible():
+                        return False
+                except:
+                    pass
+
+            return True
+        except Exception as e:
+            logger.warning(f"Error checking login: {e}")
+            return True
+
     async def generate_qr_code(self, page: Page) -> tuple[bool, Path]:
         """Generate QR code for login without waiting (non-blocking).
 
