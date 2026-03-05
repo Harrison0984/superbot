@@ -143,9 +143,11 @@ class FlightTool(Tool):
 
             # 检查登录（需要刷新页面检查二维码是否消失）
             try:
-                await page.reload()
-                await asyncio.sleep(2)
+                logger.info("检查登录状态... elapsed={}", elapsed)
+                await page.reload(wait_until="domcontentloaded")
+                await asyncio.sleep(3)
                 is_logged_in = await self.session.check_login_async(page)
+                logger.info("登录状态检查结果: {}", is_logged_in)
                 if is_logged_in:
                     logger.info("扫码成功，开始搜索...")
                     # 登录成功，继续搜索
