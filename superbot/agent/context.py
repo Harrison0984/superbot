@@ -8,8 +8,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from superbot.agent.memory import MemoryStore
 from superbot.agent.skills import SkillsLoader
+
+# Text file extensions that can be read as plain text
+TEXT_FILE_EXTS = {".txt", ".md", ".json", ".csv", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css", ".sh", ".bat", ".sql"}
+
+# Try to import pypdf for PDF support
+try:
+    from pypdf import PdfReader
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+    PdfReader = None
 
 
 class ContextBuilder:
@@ -128,23 +141,108 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             {"role": "user", "content": merged},
         ]
 
+    def _extract_pdf_text(self, path: Path) -> str | None:
+        """Extract text content from PDF file."""
+        if not PDF_AVAILABLE or PdfReader is None:
+            logger.warning("pypdf not available, cannot extract PDF content")
+            return None
+        try:
+            reader = PdfReader(str(path))
+            text_parts = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    text_parts.append(text)
+            content = "\n\n".join(text_parts)
+            if not content.strip():
+                return None
+            return content[:50000]  # Limit to 50k chars
+        except Exception as e:
+            logger.error("Error extracting PDF text: {}", e)
+            return None
+
+    def _read_text_file(self, path: Path) -> str | None:
+        """Read text file content."""
+        # Try UTF-8 first
+        try:
+            content = path.read_text(encoding="utf-8")
+            return content[:50000]  # Limit to 50k chars
+        except UnicodeDecodeError:
+            pass
+        except Exception as e:
+            logger.error("Error reading text file (utf-8): {}", e)
+            return None
+
+        # Try GBK encoding (common for Chinese text files)
+        try:
+            content = path.read_text(encoding="gbk")
+            return content[:50000]
+        except Exception as e:
+            logger.error("Error reading text file (gbk): {}", e)
+            return None
+
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """Build user message content with optional base64-encoded images and file attachments."""
         if not media:
             return text
 
-        images = []
+        content_parts = []
+        attachments_info = []
+
         for path in media:
             p = Path(path)
-            mime, _ = mimetypes.guess_type(path)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
+            if not p.is_file():
                 continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
 
-        if not images:
+            mime, _ = mimetypes.guess_type(str(p))
+            ext = p.suffix.lower()
+
+            # Handle image files - embed as base64
+            if mime and mime.startswith("image/"):
+                try:
+                    b64 = base64.b64encode(p.read_bytes()).decode()
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"}
+                    })
+                except Exception as e:
+                    logger.error("Error encoding image: {}", e)
+                    attachments_info.append(f"[Image: {p.name}]")
+
+            # Handle PDF files - extract text content
+            elif ext == ".pdf":
+                pdf_text = self._extract_pdf_text(p)
+                if pdf_text:
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"--- PDF Content: {p.name} ---\n{pdf_text}"
+                    })
+                else:
+                    attachments_info.append(f"[PDF: {p.name}]")
+
+            # Handle text files - read content directly
+            elif ext in TEXT_FILE_EXTS:
+                file_text = self._read_text_file(p)
+                if file_text:
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"--- File: {p.name} ---\n{file_text}"
+                    })
+                else:
+                    attachments_info.append(f"[File: {p.name}]")
+
+            # Other file types - just note that file was received
+            else:
+                attachments_info.append(f"[File: {p.name}]")
+
+        # Append file attachment info to text
+        if attachments_info:
+            text = text + "\n\nReceived files: " + ", ".join(attachments_info)
+
+        if not content_parts:
             return text
-        return images + [{"type": "text", "text": text}]
+
+        return content_parts + [{"type": "text", "text": text}]
 
     def add_tool_result(
         self, messages: list[dict[str, Any]],
