@@ -181,16 +181,40 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    @staticmethod
+    def _check_user_error(result: str) -> dict | None:
+        """Check if tool result requires user interaction.
+
+        Returns:
+            dict with keys: message, media (optional), type, trace (optional)
+            Or None if no user interaction required.
+        """
+        try:
+            data = json.loads(result)
+            if isinstance(data, dict) and "_tool_error" in data:
+                error = data["_tool_error"]
+                if error.get("feedback_to") == "user":
+                    return {
+                        "type": error.get("type"),
+                        "message": error.get("message", ""),
+                        "media": error.get("media", []),
+                        "trace": error.get("trace", "")
+                    }
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return None
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
-    ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+    ) -> tuple[str | None, list[str], list[dict], list[str]]:
+        """Run the agent iteration loop. Returns (final_content, tools_used, messages, user_media)."""
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        user_media: list[str] = []  # Media files to send to user
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -233,6 +257,20 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # 检查是否是用户交互错误（需要直接反馈给用户）
+                    user_feedback = self._check_user_error(result)
+                    if user_feedback:
+                        # 直接返回给用户，包含消息和媒体
+                        logger.info("Tool requires user interaction: {}", user_feedback["message"])
+                        # 将工具结果添加到消息历史（不打断循环）
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_call.name, result
+                        )
+                        # 返回用户反馈内容作为最终回复
+                        media = user_feedback.get("media", [])
+                        return user_feedback["message"], tools_used, messages, media
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -258,7 +296,7 @@ class AgentLoop:
                 "without completing the task. You can try breaking the task into smaller steps."
             )
 
-        return final_content, tools_used, messages
+        return final_content, tools_used, messages, user_media
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -351,7 +389,7 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            final_content, _, all_msgs, _ = await self._run_agent_loop(messages)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -436,7 +474,7 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
-        final_content, _, all_msgs = await self._run_agent_loop(
+        final_content, _, all_msgs, user_media = await self._run_agent_loop(
             initial_messages, on_progress=on_progress or _bus_progress,
         )
 
@@ -453,7 +491,7 @@ class AgentLoop:
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
-            metadata=msg.metadata or {},
+            media=user_media, metadata=msg.metadata or {},
         )
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:

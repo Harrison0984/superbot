@@ -4,7 +4,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 
 
 def _resolve_path(
@@ -50,14 +50,14 @@ class ReadFileTool(Tool):
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return tool_error("not_found", f"File not found: {path}")
             if not file_path.is_file():
-                return f"Error: Not a file: {path}"
+                return tool_error("not_file", f"Not a file: {path}")
 
             content = file_path.read_text(encoding="utf-8")
             return content
         except PermissionError as e:
-            return f"Error: {e}"
+            return tool_error("io_error", str(e))
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -95,7 +95,7 @@ class WriteFileTool(Tool):
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {file_path}"
         except PermissionError as e:
-            return f"Error: {e}"
+            return tool_error("io_error", str(e))
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -131,7 +131,7 @@ class EditFileTool(Tool):
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return tool_error("not_found", f"File not found: {path}")
 
             content = file_path.read_text(encoding="utf-8")
 
@@ -148,7 +148,7 @@ class EditFileTool(Tool):
 
             return f"Successfully edited {file_path}"
         except PermissionError as e:
-            return f"Error: {e}"
+            return tool_error("io_error", str(e))
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
@@ -175,7 +175,7 @@ class EditFileTool(Tool):
                     lineterm="",
                 )
             )
-            return f"Error: old_text not found in {path}.\nBest match ({best_ratio:.0%} similar) at line {best_start + 1}:\n{diff}"
+            return tool_error("text_not_found", f"old_text not found in {path}. Best match ({best_ratio:.0%} similar)", path=path)
         return (
             f"Error: old_text not found in {path}. No similar text found. Verify the file content."
         )
@@ -208,9 +208,9 @@ class ListDirTool(Tool):
         try:
             dir_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not dir_path.exists():
-                return f"Error: Directory not found: {path}"
+                return tool_error("not_found", f"Directory not found: {path}")
             if not dir_path.is_dir():
-                return f"Error: Not a directory: {path}"
+                return tool_error("not_directory", f"Not a directory: {path}")
 
             items = []
             for item in sorted(dir_path.iterdir()):
@@ -222,6 +222,6 @@ class ListDirTool(Tool):
 
             return "\n".join(items)
         except PermissionError as e:
-            return f"Error: {e}"
+            return tool_error("io_error", str(e))
         except Exception as e:
             return f"Error listing directory: {str(e)}"

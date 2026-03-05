@@ -78,13 +78,12 @@ class SessionManager:
             logger.warning(f"Error checking login: {e}")
             return True  # 出错时默认已登录
 
-    async def wait_for_login(self, page: Page, timeout: int = 120) -> bool:
-        """Wait for user to scan QR code and login.
+    async def generate_qr_code(self, page: Page) -> tuple[bool, Path]:
+        """Generate QR code for login without waiting (non-blocking).
 
         Returns:
-            True if login successful, False if timeout
+            (success, qr_screenshot_path): Tuple of generation status and QR code screenshot path
         """
-        # Screenshot for QR code
         screenshot_path = self.session_dir / "login_qr.png"
 
         try:
@@ -107,58 +106,12 @@ class SessionManager:
                 await page.screenshot(path=str(screenshot_path), full_page=True)
                 logger.info(f"📱 登录页面截图已保存到: {screenshot_path}")
 
-            logger.info(f"请扫码登录... (截图路径: {screenshot_path})")
-            logger.info(f"等待登录... (超时 {timeout} 秒)")
-
-            # Wait for login - check if QR code is gone (means logged in)
-            start_time = asyncio.get_event_loop().time()
-            while asyncio.get_event_loop().time() - start_time < timeout:
-                # Check if QR code / login area is still visible
-                qr_element = await page.query_selector('.lg_ercode, [class*="ercode"], [class*="login-mask"]')
-                is_logged_in = False
-
-                if qr_element:
-                    is_visible = await qr_element.is_visible()
-                    if not is_visible:
-                        # QR code gone, likely logged in
-                        is_logged_in = True
-                        logger.info("检测到二维码消失，可能已登录")
-
-                # Also check for user info elements
-                user_elements = await page.query_selector_all(
-                    '[class*="user-name"], [class*="username"], [class*="user-info"], [class*="user"], a[href*="profile"]'
-                )
-                for el in user_elements:
-                    try:
-                        if await el.is_visible():
-                            is_logged_in = True
-                            break
-                    except:
-                        pass
-
-                if is_logged_in:
-                    logger.info("✅ 登录成功!")
-                    # Save cookies
-                    context = page.context
-                    await self.save_cookies(context)
-                    return True
-
-                # Check URL change - if navigated away from login page, likely logged in
-                current_url = page.url
-                if 'passport' not in current_url and 'login' not in current_url:
-                    logger.info(f"URL changed to {current_url}, assuming logged in")
-                    context = page.context
-                    await self.save_cookies(context)
-                    return True
-
-                await asyncio.sleep(3)
-
-            logger.warning("登录超时")
-            return False
+            logger.info(f"请扫码登录: {screenshot_path}")
+            return True, screenshot_path
 
         except Exception as e:
-            logger.error(f"登录过程出错: {e}")
-            return False
+            logger.error(f"生成二维码出错: {e}")
+            return False, screenshot_path
 
     async def apply_cookies_async(self, context) -> bool:
         """Apply saved cookies to browser context (async)."""

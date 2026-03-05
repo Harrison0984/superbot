@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 from superbot.agent.tools.travel.shared import get_shared_browser
 from superbot.agent.tools.travel.ctrip import ctrip_monitor
 from superbot.agent.tools.travel.session import get_session_manager
@@ -62,32 +62,46 @@ class FlightTool(Tool):
 
             # 严格流程：
             # 1. 加载保存的 Cookie
-            # 2. 检查登录状态
-            # 3. 未登录则扫码登录
-            # 4. 登录成功后保存 Cookie
-            # 5. 进行搜索
-
-            # 1. 加载保存的 Cookie
-            if self.session.has_session():
+            # 1. 检查是否有保存的 Cookie
+            has_saved_session = self.session.has_session()
+            if has_saved_session:
                 logger.info("加载已保存的 Cookie...")
                 await self.session.apply_cookies_async(page.context)
 
-            # 2. 检查是否已登录
-            is_logged_in = await self.session.check_login(page)
-            if is_logged_in:
-                logger.info("已登录，直接搜索...")
+            # 2. 检查是否已登录（只有保存过 Cookie 才检查，否则需要登录）
+            if has_saved_session:
+                is_logged_in = await self.session.check_login(page)
+                if is_logged_in:
+                    logger.info("已登录，直接搜索...")
+                else:
+                    # Cookie 失效，需要重新登录
+                    logger.info("Cookie 失效，需要重新登录...")
+            else:
+                # 没有保存过 Cookie，需要登录
+                is_logged_in = False
 
-            # 3. 未登录则扫码登录
             if not is_logged_in:
-                logger.info("未登录，开始扫码登录流程...")
-                login_success = await self.session.wait_for_login(page, timeout=120)
-                if not login_success:
+                # 3. 未登录则生成二维码
+                logger.info("未登录，生成二维码...")
+                success, qr_path = await self.session.generate_qr_code(page)
+                if success:
+                    # 统一的错误返回结构
                     return json.dumps({
-                        "error": "login_required",
-                        "message": "需要登录才能搜索航班，请扫码登录后重试。截图已保存到 ~/.superbot/sessions/ctrip/login_qr.png"
+                        "_tool_error": {
+                            "type": "login_required",
+                            "feedback_to": "user",
+                            "message": "需要登录才能搜索航班，请扫码登录后重试",
+                            "media": [str(qr_path)]
+                        }
                     }, ensure_ascii=False)
-                # 4. 登录成功后，保存 Cookie
-                await self.session.save_cookies(page.context)
+                else:
+                    return json.dumps({
+                        "_tool_error": {
+                            "type": "qr_generation_failed",
+                            "feedback_to": "user",
+                            "message": "生成登录二维码失败，请重试"
+                        }
+                    }, ensure_ascii=False)
 
             # 5. 登录成功后，进行搜索
             try:
@@ -104,11 +118,11 @@ class FlightTool(Tool):
                 if result:
                     return json.dumps(result, ensure_ascii=False, indent=2)
                 else:
-                    return json.dumps({"error": "未找到航班", "from": from_city, "to": to_city, "date": date})
+                    return tool_error("no_results", f"未找到航班: {from_city} -> {to_city}, {date}")
 
             finally:
                 await page.close()
 
         except Exception as e:
             import traceback
-            return json.dumps({"error": str(e), "trace": traceback.format_exc()})
+            return tool_error("internal_error", str(e), trace=traceback.format_exc())

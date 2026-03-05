@@ -3,7 +3,7 @@
 from contextvars import ContextVar
 from typing import Any
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 from superbot.cron.service import CronService
 from superbot.cron.types import CronSchedule
 
@@ -83,7 +83,7 @@ class CronTool(Tool):
     ) -> str:
         if action == "add":
             if self._in_cron_context.get():
-                return "Error: cannot schedule new jobs from within a cron job execution"
+                return tool_error("forbidden", "Cannot schedule new jobs from within a cron job execution")
             return self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":
             return self._list_jobs()
@@ -100,18 +100,18 @@ class CronTool(Tool):
         at: str | None,
     ) -> str:
         if not message:
-            return "Error: message is required for add"
+            return tool_error("invalid_params", "message is required for add")
         if not self._channel or not self._chat_id:
-            return "Error: no session context (channel/chat_id)"
+            return tool_error("invalid_params", "No session context (channel/chat_id)")
         if tz and not cron_expr:
-            return "Error: tz can only be used with cron_expr"
+            return tool_error("invalid_params", "tz can only be used with cron_expr")
         if tz:
             from zoneinfo import ZoneInfo
 
             try:
                 ZoneInfo(tz)
             except (KeyError, Exception):
-                return f"Error: unknown timezone '{tz}'"
+                return tool_error("invalid_params", f"Unknown timezone: {tz}")
 
         # Build schedule
         delete_after = False
@@ -127,7 +127,7 @@ class CronTool(Tool):
             schedule = CronSchedule(kind="at", at_ms=at_ms)
             delete_after = True
         else:
-            return "Error: either every_seconds, cron_expr, or at is required"
+            return tool_error("invalid_params", "Either every_seconds, cron_expr, or at is required")
 
         job = self._cron.add_job(
             name=message[:30],
@@ -149,7 +149,7 @@ class CronTool(Tool):
 
     def _remove_job(self, job_id: str | None) -> str:
         if not job_id:
-            return "Error: job_id is required for remove"
+            return tool_error("invalid_params", "job_id is required for remove")
         if self._cron.remove_job(job_id):
             return f"Removed job {job_id}"
         return f"Job {job_id} not found"

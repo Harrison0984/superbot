@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -103,7 +103,7 @@ class WebSearchTool(Tool):
             return f"Proxy error: {e}"
         except Exception as e:
             logger.error("WebSearch error: {}", e)
-            return f"Error: {e}"
+            return tool_error("search_error", str(e))
 
 
 class WebFetchTool(Tool):
@@ -131,7 +131,7 @@ class WebFetchTool(Tool):
         max_chars = maxChars or self.max_chars
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
-            return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
+            return tool_error("invalid_url", f"URL validation failed: {error_msg}", url=url)
 
         try:
             logger.debug("WebFetch: {}", "proxy enabled" if self.proxy else "direct connection")
@@ -163,10 +163,10 @@ class WebFetchTool(Tool):
                               "extractor": extractor, "truncated": truncated, "length": len(text), "text": text}, ensure_ascii=False)
         except httpx.ProxyError as e:
             logger.error("WebFetch proxy error for {}: {}", url, e)
-            return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
+            return tool_error("proxy_error", f"Proxy error: {e}", url=url)
         except Exception as e:
             logger.error("WebFetch error for {}: {}", url, e)
-            return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
+            return tool_error("fetch_error", str(e), url=url)
 
     def _to_markdown(self, html: str) -> str:
         """Convert HTML to markdown."""

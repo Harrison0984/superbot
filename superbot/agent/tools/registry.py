@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 
 
 class ToolRegistry:
@@ -41,12 +41,12 @@ class ToolRegistry:
 
         tool = self._tools.get(name)
         if not tool:
-            return f"Error: Tool '{name}' not found. Available: {', '.join(self.tool_names)}"
+            return tool_error("not_found", f"Tool '{name}' not found", available=list(self.tool_names))
 
         try:
             errors = tool.validate_params(params)
             if errors:
-                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _HINT
+                return tool_error("invalid_params", f"Invalid parameters for tool '{name}': " + "; ".join(errors))
             result = await tool.execute(**params)
             if isinstance(result, str) and result.startswith("Error"):
                 return result + _HINT

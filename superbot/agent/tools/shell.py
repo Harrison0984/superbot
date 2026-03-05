@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 
 
 class ExecTool(Tool):
@@ -95,7 +95,7 @@ class ExecTool(Tool):
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     pass
-                return f"Error: Command timed out after {self.timeout} seconds"
+                return tool_error("timeout", f"Command timed out after {self.timeout} seconds")
             
             output_parts = []
             
@@ -129,15 +129,15 @@ class ExecTool(Tool):
 
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
-                return "Error: Command blocked by safety guard (dangerous pattern detected)"
+                return tool_error("blocked", "Command blocked by safety guard (dangerous pattern detected)")
 
         if self.allow_patterns:
             if not any(re.search(p, lower) for p in self.allow_patterns):
-                return "Error: Command blocked by safety guard (not in allowlist)"
+                return tool_error("blocked", "Command blocked by safety guard (not in allowlist)")
 
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
-                return "Error: Command blocked by safety guard (path traversal detected)"
+                return tool_error("blocked", "Command blocked by safety guard (path traversal detected)")
 
             cwd_path = Path(cwd).resolve()
 
@@ -147,7 +147,7 @@ class ExecTool(Tool):
                 except Exception:
                     continue
                 if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
-                    return "Error: Command blocked by safety guard (path outside working dir)"
+                    return tool_error("blocked", "Command blocked by safety guard (path outside working dir)")
 
         return None
 

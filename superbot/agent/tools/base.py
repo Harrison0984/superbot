@@ -1,7 +1,38 @@
 """Base class for agent tools."""
 
+import json
 from abc import ABC, abstractmethod
 from typing import Any
+
+
+def tool_error(
+    error_type: str,
+    message: str,
+    feedback_to: str = "llm",
+    media: list[str] | None = None,
+    **extra: Any,
+) -> str:
+    """
+    Generate a unified tool error response.
+
+    Args:
+        error_type: Type of error (e.g., "not_found", "timeout", "login_required")
+        message: Human-readable error message
+        feedback_to: "llm" (let LLM handle) or "user" (direct to user)
+        media: Optional list of file paths to send to user
+
+    Returns:
+        JSON string with unified error format
+    """
+    error = {
+        "type": error_type,
+        "message": message,
+        "feedback_to": feedback_to,
+    }
+    if media:
+        error["media"] = media
+    error.update(extra)
+    return json.dumps({"_tool_error": error}, ensure_ascii=False)
 
 
 class Tool(ABC):

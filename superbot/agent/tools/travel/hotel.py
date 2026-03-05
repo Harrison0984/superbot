@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Any
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 from superbot.agent.tools.travel.shared import get_shared_browser
 from superbot.agent.tools.travel.session import get_session_manager
 from superbot.agent.tools.travel.logger import get_logger
@@ -89,26 +89,46 @@ class HotelTool(Tool):
             browser = await self._get_browser()
             page = await browser.new_page()
 
-            # 1. 加载保存的 Cookie
-            if self.session.has_session():
+            # 1. 检查是否有保存的 Cookie
+            has_saved_session = self.session.has_session()
+            if has_saved_session:
                 logger.info("加载已保存的 Cookie...")
                 await self.session.apply_cookies_async(page.context)
 
-            # 2. 检查是否已登录
-            is_logged_in = await self.session.check_login(page)
-            if is_logged_in:
-                logger.info("已登录，直接搜索...")
+            # 2. 检查是否已登录（只有保存过 Cookie 才检查，否则需要登录）
+            if has_saved_session:
+                is_logged_in = await self.session.check_login(page)
+                if is_logged_in:
+                    logger.info("已登录，直接搜索...")
+                else:
+                    # Cookie 失效，需要重新登录
+                    logger.info("Cookie 失效，需要重新登录...")
+            else:
+                # 没有保存过 Cookie，需要登录
+                is_logged_in = False
 
-            # 3. 未登录则扫码登录
             if not is_logged_in:
-                logger.info("未登录，开始扫码登录流程...")
-                login_success = await self.session.wait_for_login(page, timeout=120)
-                if not login_success:
+                # 3. 未登录则生成二维码
+                logger.info("未登录，生成二维码...")
+                success, qr_path = await self.session.generate_qr_code(page)
+                if success:
+                    # 统一的错误返回结构
                     return json.dumps({
-                        "error": "login_required",
-                        "message": "需要登录才能搜索酒店，请扫码登录后重试"
+                        "_tool_error": {
+                            "type": "login_required",
+                            "feedback_to": "user",
+                            "message": "需要登录才能搜索酒店，请扫码登录后重试",
+                            "media": [str(qr_path)]
+                        }
                     }, ensure_ascii=False)
-                await self.session.save_cookies(page.context)
+                else:
+                    return json.dumps({
+                        "_tool_error": {
+                            "type": "qr_generation_failed",
+                            "feedback_to": "user",
+                            "message": "生成登录二维码失败，请重试"
+                        }
+                    }, ensure_ascii=False)
 
             # 4. 搜索酒店
             try:
@@ -134,18 +154,11 @@ class HotelTool(Tool):
                         "hotels": hotels
                     }, ensure_ascii=False, indent=2)
                 else:
-                    return json.dumps({
-                        "error": "no_results",
-                        "message": "未找到酒店",
-                        "city": city
-                    }, ensure_ascii=False)
+                    return tool_error("no_results", f"未找到酒店: {city}")
 
             finally:
                 await page.close()
 
         except Exception as e:
             import traceback
-            return json.dumps({
-                "error": str(e),
-                "trace": traceback.format_exc()
-            }, ensure_ascii=False)
+            return tool_error("internal_error", str(e), trace=traceback.format_exc())

@@ -2,7 +2,7 @@
 
 from typing import Any, Awaitable, Callable
 
-from superbot.agent.tools.base import Tool
+from superbot.agent.tools.base import Tool, tool_error
 from superbot.bus.events import OutboundMessage
 
 
@@ -84,10 +84,10 @@ class MessageTool(Tool):
         message_id = message_id or self._default_message_id
 
         if not channel or not chat_id:
-            return "Error: No target channel/chat specified"
+            return tool_error("invalid_params", "No target channel/chat specified")
 
         if not self._send_callback:
-            return "Error: Message sending not configured"
+            return tool_error("not_configured", "Message sending not configured")
 
         msg = OutboundMessage(
             channel=channel,
@@ -106,4 +106,4 @@ class MessageTool(Tool):
             media_info = f" with {len(media)} attachments" if media else ""
             return f"Message sent to {channel}:{chat_id}{media_info}"
         except Exception as e:
-            return f"Error sending message: {str(e)}"
+            return tool_error("send_error", f"Error sending message: {str(e)}")
