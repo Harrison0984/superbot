@@ -7,7 +7,7 @@ from typing import Any
 
 from superbot.agent.tools.base import Tool, tool_error
 from superbot.agent.tools.travel.shared import get_shared_browser
-from superbot.agent.tools.travel.session import get_session_manager
+from superbot.agent.tools.travel.session import get_session_manager, verify_login
 from superbot.agent.tools.travel.logger import get_logger
 from superbot.bus.events import ToolEvent
 
@@ -100,21 +100,22 @@ class HotelTool(Tool):
 
             # 1. 检查是否有保存的 Cookie
             has_saved_session = self.session.has_session()
+            is_logged_in = False
+
             if has_saved_session:
                 logger.info("加载已保存的 Cookie...")
                 await self.session.apply_cookies_async(page.context)
 
-            # 2. 检查是否已登录（只有保存过 Cookie 才检查，否则需要登录）
-            if has_saved_session:
-                is_logged_in = await self.session.check_login(page)
-                if is_logged_in:
-                    logger.info("已登录，直接搜索...")
-                else:
-                    # Cookie 失效，需要重新登录
-                    logger.info("Cookie 失效，需要重新登录...")
+            # 2. 必须检查页面登录状态（有cookie也可能失效）
+            logger.info("检查页面登录状态...")
+            is_logged_in = await verify_login(page, "https://hotels.ctrip.com/hotels/list")
+
+            if is_logged_in:
+                logger.info("已登录，直接搜索...")
+            elif has_saved_session:
+                logger.info("Cookie 失效，需要重新登录...")
             else:
-                # 没有保存过 Cookie，需要登录
-                is_logged_in = False
+                logger.info("未登录，需要登录...")
 
             if not is_logged_in:
                 # 3. 未登录则生成二维码
@@ -179,7 +180,7 @@ class HotelTool(Tool):
             try:
                 await page.reload()
                 await asyncio.sleep(2)
-                is_logged_in = await self.session.check_login_async(page)
+                is_logged_in = await verify_login(page, "https://hotels.ctrip.com/hotels/list")
                 if is_logged_in:
                     logger.info("扫码成功，开始搜索...")
                     # 登录成功，继续搜索

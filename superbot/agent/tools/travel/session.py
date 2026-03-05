@@ -166,6 +166,59 @@ class SessionManager:
 _session_manager: Optional[SessionManager] = None
 
 
+async def verify_login(page: Page, url: str) -> bool:
+    """验证登录状态
+
+    流程：
+    1. 导航到指定页面
+    2. 检查页面顶部是否有"尊敬的xxx"或"我的订单"
+    3. 返回 True(已登录)/False(未登录)
+    """
+    try:
+        # 导航到指定页面
+        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        await page.wait_for_load_state("networkidle")
+
+        # 检测用户名称
+        user_selectors = [
+            '.user-name',
+            '.username',
+            '.nick-name',
+            '[class*="user-name"]',
+            '[class*="userName"]',
+            '[id*="userName"]',
+            '.user-avatar',
+            '.avatar',
+            '[class*="avatar"]',
+            '.hp_user',
+            '.header-user',
+            '.login-user',
+            '[class*="header_user"]',
+            '[class*="login_wrapper"]',
+            'a:has-text("我的订单")',
+            'a:has-text("您好")',
+        ]
+
+        for sel in user_selectors:
+            try:
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    text = await el.inner_text()
+                    if text and text.strip():
+                        # 有"尊敬的"或"我的订单" → 已登录
+                        if "尊敬的" in text or "我的订单" in text:
+                            logger.info("已登录，检测到用户: %s", text[:30])
+                            return True
+            except Exception:
+                continue
+
+        logger.info("未检测到用户元素，视为未登录")
+        return False
+    except Exception as e:
+        logger.warning("验证登录失败: %s", e)
+        return False
+
+
 def get_session_manager() -> SessionManager:
     """Get or create the global session manager."""
     global _session_manager
