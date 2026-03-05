@@ -279,6 +279,16 @@ class AgentLoop:
                         media = user_feedback.get("media", [])
                         return user_feedback["message"], tools_used, messages, media
 
+                    # 检查是否是后台任务（工具正在等待用户交互）
+                    try:
+                        result_data = json.loads(result)
+                        if isinstance(result_data, dict) and result_data.get("_tool_background"):
+                            # 后台任务正在运行，立即返回，不阻塞
+                            logger.info("Tool {} running in background", tool_call.name)
+                            return "正在处理中，请稍候...", tools_used, messages, []
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -375,7 +385,17 @@ class AgentLoop:
 
     async def _handle_tool_event(self, event: ToolEvent) -> None:
         """Handle tool events from background tasks."""
-        if event.event_type == "progress":
+        if event.event_type == "waiting":
+            # 发送等待消息给用户，包含二维码
+            logger.info("Tool {} waiting: {}", event.tool_name, event.content)
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=event.session_key.split(":")[0] if ":" in event.session_key else "feishu",
+                chat_id=event.session_key.split(":")[1] if ":" in event.session_key else event.session_key,
+                content=event.content,
+                media=event.media
+            ))
+
+        elif event.event_type == "progress":
             # 附加到会话 metadata，不单独发消息给用户
             session = self.sessions.get_or_create(event.session_key)
             session.metadata.setdefault("_tool_progress", {})[event.task_id] = {
