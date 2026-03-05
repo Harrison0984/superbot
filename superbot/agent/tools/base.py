@@ -1,8 +1,12 @@
 """Base class for agent tools."""
 
+import asyncio
 import json
 from abc import ABC, abstractmethod
 from typing import Any
+
+from superbot.bus.events import ToolEvent
+from superbot.bus.queue import MessageBus
 
 
 def tool_error(
@@ -51,6 +55,17 @@ class Tool(ABC):
         "array": list,
         "object": dict,
     }
+
+    _bus: MessageBus | None = None  # 类属性
+
+    def set_bus(self, bus: MessageBus) -> None:
+        """依赖注入消息总线"""
+        self._bus = bus
+
+    def _emit_event(self, event: ToolEvent) -> None:
+        """发送工具事件到总线"""
+        if self._bus:
+            asyncio.create_task(self._bus.tool_events.put(event))
 
     @property
     @abstractmethod
