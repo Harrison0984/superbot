@@ -211,6 +211,7 @@ class AgentLoop:
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
+        session_key: str,
         on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict], list[str]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages, user_media)."""
@@ -260,7 +261,10 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    # 在 tool_call.arguments 复制一份，添加 session_key
+                    args = dict(tool_call.arguments)
+                    args["_session_key"] = session_key
+                    result = await self.tools.execute(tool_call.name, args)
 
                     # 检查是否是用户交互错误（需要直接反馈给用户）
                     user_feedback = self._check_user_error(result)
@@ -455,7 +459,7 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs, _ = await self._run_agent_loop(messages)
+            final_content, _, all_msgs, _ = await self._run_agent_loop(messages, key)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -541,7 +545,7 @@ class AgentLoop:
             ))
 
         final_content, _, all_msgs, user_media = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            initial_messages, key, on_progress=on_progress or _bus_progress,
         )
 
         if final_content is None:
