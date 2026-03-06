@@ -237,10 +237,13 @@ class EmailChannel(BaseChannel):
         messages: list[dict[str, Any]] = []
         mailbox = self.config.imap_mailbox or "INBOX"
 
+        # IMAP connection timeout
+        imap_timeout = 30
+
         if self.config.imap_use_ssl:
-            client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port)
+            client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
         else:
-            client = imaplib.IMAP4(self.config.imap_host, self.config.imap_port)
+            client = imaplib.IMAP4(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
 
         try:
             client.login(self.config.imap_username, self.config.imap_password)
