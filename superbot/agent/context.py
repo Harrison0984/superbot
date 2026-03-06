@@ -36,9 +36,12 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(self, skill_names: list[str] | None = None, channel: str | None = None) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
-        parts = [self._get_identity()]
+        if channel == "email":
+            from loguru import logger
+            logger.debug("Building email-specific system prompt")
+        parts = [self._get_identity(channel=channel)]
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
@@ -65,11 +68,14 @@ Skills with available="false" need dependencies installed first - you can try in
 
         return "\n\n---\n\n".join(parts)
 
-    def _get_identity(self) -> str:
+    def _get_identity(self, channel: str | None = None) -> str:
         """Get the core identity section."""
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
+
+        # Channel-specific instructions
+        channel_instructions = self._get_channel_instructions(channel)
 
         return f"""# superbot 🐈
 
@@ -83,6 +89,9 @@ Your workspace is at: {workspace_path}
 - Long-term memory: {workspace_path}/memory/MEMORY.md (write important facts here)
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
+
+## Channel Instructions
+{channel_instructions}
 
 ## superbot Guidelines
 - State intent before tool calls, but NEVER predict or claim results before receiving them.
@@ -102,6 +111,16 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if channel and chat_id:
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
+
+    def _get_channel_instructions(self, channel: str | None = None) -> str:
+        """Get channel-specific instructions."""
+        if channel == "email":
+            return """You are handling an incoming EMAIL.
+- Summarize the email content concisely
+- Do NOT reply to the email directly - just summarize the key points
+- If the email requires action, highlight the action items
+- Use the 'message' tool to send the summary to the user via another channel (e.g., Feishu, Telegram)"""
+        return """You are in a conversational chat. Reply naturally to the user."""
 
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -136,7 +155,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel)},
             *history,
             {"role": "user", "content": merged},
         ]

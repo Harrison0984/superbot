@@ -42,7 +42,8 @@ class FeishuConfig(Base):
     encrypt_key: str = ""  # Encrypt Key for event subscription (optional)
     verification_token: str = ""  # Verification Token for event subscription (optional)
     allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
-    react_emoji: str = "THUMBSUP"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE)
+    react_emoji: str = "🐈"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE, 🐈)
+    user_id: str = ""  # User open_id for notification recipient (e.g., "ou_xxx")
 
 
 class EmailConfig(Base):
