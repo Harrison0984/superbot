@@ -4,6 +4,7 @@ import asyncio
 import html
 import imaplib
 import re
+import time
 import smtplib
 import ssl
 from datetime import date
@@ -12,6 +13,7 @@ from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import parseaddr
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -91,6 +93,7 @@ class EmailChannel(BaseChannel):
                         sender_id=sender,
                         chat_id=sender,
                         content=item["content"],
+                        media=item.get("media", []),
                         metadata=item.get("metadata", {}),
                     )
             except Exception as e:
@@ -171,7 +174,7 @@ class EmailChannel(BaseChannel):
         return True
 
     def _smtp_send(self, msg: EmailMessage) -> None:
-        timeout = 30
+        timeout = 60
         if self.config.smtp_use_ssl:
             with smtplib.SMTP_SSL(
                 self.config.smtp_host,
@@ -275,15 +278,24 @@ class EmailChannel(BaseChannel):
                 message_id = parsed.get("Message-ID", "").strip()
                 body = self._extract_text_body(parsed)
 
+                # Extract attachments
+                media_paths, attachment_names = self._extract_attachments(parsed)
+
                 if not body:
                     body = "(empty email body)"
 
                 body = body[: self.config.max_body_chars]
+
+                # Add attachment info to content
+                attachment_text = ""
+                if attachment_names:
+                    attachment_text = f"\n\nAttachments: {', '.join(attachment_names)}"
+
                 content = (
                     f"Email received.\n"
                     f"From: {sender}\n"
                     f"Subject: {subject}\n"
-                    f"Date: {date_value}\n\n"
+                    f"Date: {date_value}{attachment_text}\n\n"
                     f"{body}"
                 )
 
@@ -300,6 +312,7 @@ class EmailChannel(BaseChannel):
                         "subject": subject,
                         "message_id": message_id,
                         "content": content,
+                        "media": media_paths,
                         "metadata": metadata,
                     }
                 )
@@ -399,6 +412,76 @@ class EmailChannel(BaseChannel):
         text = re.sub(r"<\s*/\s*p\s*>", "\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<[^>]+>", "", text)
         return html.unescape(text)
+
+    # Maximum attachment size: 10MB
+    MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+
+    # Blocked dangerous file extensions
+    BLOCKED_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".com", ".pif", ".msi", ".dll", ".vbs", ".js", ".jar", ".sh", ".ps1", ".deb", ".rpm"}
+
+    def _extract_attachments(self, msg: Any) -> tuple[list[str], list[str]]:
+        """Extract attachments from email and save to local directory.
+
+        Args:
+            msg: Parsed email message
+
+        Returns:
+            Tuple of (media_paths, attachment_names)
+        """
+        media_dir = Path.home() / ".superbot" / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+
+        media_paths: list[str] = []
+        attachment_info: list[str] = []
+
+        try:
+            for part in msg.walk():
+                content_disposition = part.get_content_disposition()
+                if content_disposition != "attachment":
+                    continue
+
+                filename = part.get_filename()
+                if not filename:
+                    continue
+
+                # Decode filename if encoded
+                filename = self._decode_header_value(filename)
+
+                # Check file extension for safety
+                ext = Path(filename).suffix.lower()
+                if ext in self.BLOCKED_EXTENSIONS:
+                    logger.warning("Blocked dangerous attachment: {}", filename)
+                    attachment_info.append(f"{filename} (blocked)")
+                    continue
+
+                # Get content
+                payload = part.get_payload(decode=True)
+                if not payload or not isinstance(payload, bytes):
+                    continue
+
+                # Check file size
+                if len(payload) > self.MAX_ATTACHMENT_SIZE:
+                    logger.warning("Attachment too large ({} bytes): {}", len(payload), filename)
+                    attachment_info.append(f"{filename} (too large)")
+                    continue
+
+                # Save to file
+                file_path = media_dir / filename
+                # Avoid overwriting existing files
+                if file_path.exists():
+                    stem = file_path.stem
+                    suffix = file_path.suffix
+                    file_path = media_dir / f"{stem}_{int(time.time())}{suffix}"
+
+                file_path.write_bytes(payload)
+                media_paths.append(str(file_path))
+                attachment_info.append(filename)
+                logger.debug("Saved email attachment: {}", filename)
+
+        except Exception as e:
+            logger.error("Error extracting email attachments: {}", e)
+
+        return media_paths, attachment_info
 
     def _reply_subject(self, base_subject: str) -> str:
         subject = (base_subject or "").strip() or "superbot reply"
