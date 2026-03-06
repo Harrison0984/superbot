@@ -279,7 +279,7 @@ class Config(BaseSettings):
         return p
 
     def get_provider_name(self, model: str | None = None) -> str | None:
-        """Get the registry name of the matched provider (e.g. "deepseek", "openrouter")."""
+        """Get the registry name of the matched provider (e.g. "deepseek")."""
         _, name = self._match_provider(model)
         return name
 

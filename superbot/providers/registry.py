@@ -39,9 +39,9 @@ class ProviderSpec:
     env_extras: tuple[tuple[str, str], ...] = ()
 
     # gateway / local detection
-    is_gateway: bool = False                 # routes any model (OpenRouter, AiHubMix)
+    is_gateway: bool = False                 # routes any model (e.g., VolcEngine)
     is_local: bool = False                   # local deployment (vLLM, Ollama)
-    detect_by_key_prefix: str = ""           # match api_key prefix, e.g. "sk-or-"
+    detect_by_key_prefix: str = ""           # match api_key prefix
     detect_by_base_keyword: str = ""         # match substring in api_base URL
     default_api_base: str = ""               # fallback base URL
 
@@ -224,7 +224,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         env_key="ZAI_API_KEY",
         display_name="Zhipu AI",
         litellm_prefix="zai",              # glm-4 → zai/glm-4
-        skip_prefixes=("zhipu/", "zai/", "openrouter/", "hosted_vllm/"),
+        skip_prefixes=("zhipu/", "zai/", "hosted_vllm/"),
         env_extras=(
             ("ZHIPUAI_API_KEY", "{api_key}"),
         ),
@@ -244,7 +244,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         env_key="DASHSCOPE_API_KEY",
         display_name="DashScope",
         litellm_prefix="dashscope",         # qwen-max → dashscope/qwen-max
-        skip_prefixes=("dashscope/", "openrouter/"),
+        skip_prefixes=("dashscope/",),
         env_extras=(),
         is_gateway=False,
         is_local=False,
@@ -314,8 +314,8 @@ def find_gateway(
 
     Priority:
       1. provider_name — if it maps to a gateway/local spec, use it directly.
-      2. api_key prefix — e.g. "sk-or-" → OpenRouter.
-      3. api_base keyword — e.g. "aihubmix" in URL → AiHubMix.
+      2. api_key prefix — e.g. "sk-" prefix detection.
+      3. api_base keyword — e.g. "volces" in URL → VolcEngine.
 
     A standard provider with a custom api_base (e.g. DeepSeek behind a proxy)
     will NOT be mistaken for vLLM — the old fallback is gone.

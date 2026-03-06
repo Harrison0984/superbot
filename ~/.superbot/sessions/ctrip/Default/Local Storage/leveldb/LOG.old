@@ -1,0 +1,8 @@
+2026/03/06-00:36:44.038 4a8a7e Creating DB /Users/heyunpeng/workstation/src/superbot/~/.superbot/sessions/ctrip/Default/Local Storage/leveldb since it was missing.
+2026/03/06-00:36:44.058 4a8a7e Reusing MANIFEST /Users/heyunpeng/workstation/src/superbot/~/.superbot/sessions/ctrip/Default/Local Storage/leveldb/MANIFEST-000001
+2026/03/06-00:37:02.398 4a8a84 Level-0 table #5: started
+2026/03/06-00:37:02.400 4a8a84 Level-0 table #5: 24526 bytes OK
+2026/03/06-00:37:02.403 4a8a84 Delete type=0 #3
+2026/03/06-00:37:31.114 4a8a84 Level-0 table #7: started
+2026/03/06-00:37:31.117 4a8a84 Level-0 table #7: 96015 bytes OK
+2026/03/06-00:37:31.118 4a8a84 Delete type=0 #4

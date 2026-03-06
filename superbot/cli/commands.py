@@ -191,7 +191,7 @@ def onboard():
     console.print(f"\n{__logo__} superbot is ready!")
     console.print("\nNext steps:")
     console.print("  1. Add your API key to [cyan]~/.superbot/config.json[/cyan]")
-    console.print("     Get one at: https://openrouter.ai/keys")
+    console.print("     Get one at: https://platform.minimaxi.com (for MiniMax)")
     console.print("  2. Chat: [cyan]superbot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/Harrison0984/superbot#-chat-apps[/dim]")
 
