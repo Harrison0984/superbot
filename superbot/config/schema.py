@@ -50,6 +50,7 @@ class EmailConfig(Base):
 
     enabled: bool = False
     consent_granted: bool = False  # Explicit owner permission to access mailbox data
+    use_proxy: bool = False  # Use global proxy settings
 
     # IMAP (receive)
     imap_host: str = ""
@@ -69,7 +70,6 @@ class EmailConfig(Base):
     from_address: str = ""
 
     # Behavior
-    auto_reply_enabled: bool = True  # If false, inbound email is read but no automatic reply is sent
     poll_interval_seconds: int = 30
     mark_seen: bool = True
     max_body_chars: int = 12000
@@ -130,18 +130,13 @@ class ProvidersConfig(Base):
     custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
-    openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
-    groq: ProviderConfig = Field(default_factory=ProviderConfig)
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
     dashscope: ProviderConfig = Field(default_factory=ProviderConfig)  # 阿里云通义千问
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
-    moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
     minimax: ProviderConfig = Field(default_factory=ProviderConfig)
     mlx: ProviderConfig = Field(default_factory=ProviderConfig)  # MLX (Apple Silicon local models)
-    aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
-    siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (硅基流动) API gateway
     volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎) API gateway
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
@@ -211,6 +206,15 @@ class LocalModelConfig(Base):
     path: str = ""  # Path to local model (full path required)
 
 
+class ProxyConfig(Base):
+    """Global proxy configuration."""
+
+    enabled: bool = False
+    http_proxy: str | None = None  # e.g. "http://127.0.0.1:7890"
+    https_proxy: str | None = None  # e.g. "http://127.0.0.1:7890"
+    socks_proxy: str | None = None  # e.g. "socks5://127.0.0.1:1080"
+
+
 class Config(BaseSettings):
     """Root configuration for superbot."""
 
@@ -220,6 +224,7 @@ class Config(BaseSettings):
     local_model: LocalModelConfig = Field(default_factory=LocalModelConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    proxy: ProxyConfig = Field(default_factory=ProxyConfig)
 
     @property
     def workspace_path(self) -> Path:

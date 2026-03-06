@@ -36,7 +36,7 @@ User Message (Telegram/WhatsApp/Feishu/Email/QQ)
 | **Chat Bridges** | Adapters for Telegram, WhatsApp, Feishu, Email, QQ |
 | **Message Bus** | Async queue for inbound/outbound messages |
 | **Agent** | Core reasoning loop with context, memory, and tool execution |
-| **LLM Providers** | OpenAI, Anthropic, MiniMax, OpenRouter, MLX (Apple Silicon local), etc. |
+| **LLM Providers** | OpenAI, Anthropic, MiniMax, MLX (Apple Silicon local), etc. |
 | **Tools** | Shell, filesystem, web search, MCP servers |
 | **Scheduled Tasks** | Cron-based job scheduling + heartbeat service |
 
@@ -66,7 +66,7 @@ pip install superbot-ai
 
 > [!TIP]
 > Default provider is **MiniMax**. Set your API key in `~/.superbot/config.json`.
-> Get API keys: [MiniMax](https://platform.minimaxi.com) (China) · [OpenRouter](https://openrouter.ai/keys) (Global)
+> Get API keys: [MiniMax](https://platform.minimaxi.com) (China)
 
 **1. Initialize**
 
@@ -84,22 +84,6 @@ Add your API key to the provider config:
   "providers": {
     "minimax": {
       "apiKey": "your-minimax-api-key"
-    }
-  }
-}
-```
-
-*Or use OpenRouter (global):*
-```json
-{
-  "providers": {
-    "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "provider": "openrouter"
     }
   }
 }
@@ -340,15 +324,65 @@ Give superbot its own email account. It polls **IMAP** for incoming mail and rep
 superbot gateway
 ```
 
+**4. Proxy Support (Optional)**
+
+If you need to use a proxy for email connections (e.g., in China), configure global proxy settings:
+
+```json
+{
+  "proxy": {
+    "enabled": true,
+    "socks_proxy": "socks5://127.0.0.1:7897"
+  },
+  "channels": {
+    "email": {
+      "enabled": true,
+      "use_proxy": true,
+      ...
+    }
+  }
+}
+```
+
+Supported proxy types:
+- `socks_proxy`: SOCKS4/SOCKS5 proxy (recommended)
+- `http_proxy` / `https_proxy`: HTTP/HTTPS proxy
+
 </details>
 ## ⚙️ Configuration
 
 Config file: `~/.superbot/config.json`
 
+### Proxy
+
+Global proxy settings for channels that support it (e.g., Email).
+
+```json
+{
+  "proxy": {
+    "enabled": true,
+    "http_proxy": "http://127.0.0.1:7890",
+    "https_proxy": "http://127.0.0.1:7890",
+    "socks_proxy": "socks5://127.0.0.1:1080"
+  }
+}
+```
+
+Then enable proxy in individual channels:
+
+```json
+{
+  "channels": {
+    "email": {
+      "use_proxy": true
+    }
+  }
+}
+```
+
 ### Providers
 
 > [!TIP]
-> - **Groq** provides free voice transcription via Whisper. If configured, Telegram voice messages will be automatically transcribed.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **VolcEngine Coding Plan**: If you're on VolcEngine's coding plan, set `"apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3"` in your volcengine provider config.
@@ -363,11 +397,8 @@ Config file: `~/.superbot/config.json`
 | `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `minimax` | LLM (MiniMax direct) | [platform.minimaxi.com](https://platform.minimaxi.com) |
-| `aihubmix` | LLM (API gateway, access to all models) | [aihubmix.com](https://aihubmix.com) |
-| `siliconflow` | LLM (SiliconFlow/硅基流动) | [siliconflow.cn](https://siliconflow.cn) |
 | `volcengine` | LLM (VolcEngine/火山引擎) | [volcengine.com](https://www.volcengine.com) |
 | `dashscope` | LLM (Qwen) | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
-| `moonshot` | LLM (Moonshot/Kimi) | [platform.moonshot.cn](https://platform.moonshot.cn) |
 | `zhipu` | LLM (Zhipu GLM) | [open.bigmodel.cn](https://open.bigmodel.cn) |
 | `vllm` | LLM (local, any OpenAI-compatible server) | — |
 | `mlx` | LLM (Apple Silicon local models) | — |
@@ -536,10 +567,10 @@ That's it! Environment variables, model prefixing, config matching, and `superbo
 | `litellm_prefix` | Auto-prefix model names for LiteLLM | `"dashscope"` → `dashscope/qwen-max` |
 | `skip_prefixes` | Don't prefix if model already starts with these | `("dashscope/", "openrouter/")` |
 | `env_extras` | Additional env vars to set | `(("ZHIPUAI_API_KEY", "{api_key}"),)` |
-| `model_overrides` | Per-model parameter overrides | `(("kimi-k2.5", {"temperature": 1.0}),)` |
-| `is_gateway` | Can route any model (like OpenRouter) | `True` |
-| `detect_by_key_prefix` | Detect gateway by API key prefix | `"sk-or-"` |
-| `detect_by_base_keyword` | Detect gateway by API base URL | `"openrouter"` |
+| `model_overrides` | Per-model parameter overrides | — |
+| `is_gateway` | Can route any model (like VolcEngine) | `True` |
+| `detect_by_key_prefix` | Detect gateway by API key prefix | — |
+| `detect_by_base_keyword` | Detect gateway by API base URL | `"volces"` |
 | `strip_model_prefix` | Strip existing prefix before re-prefixing | `True` (for AiHubMix) |
 
 </details>
@@ -689,59 +720,6 @@ docker run -v ~/.superbot:/root/.superbot --rm superbot agent -m "Hello!"
 docker run -v ~/.superbot:/root/.superbot --rm superbot status
 ```
 
-## 🐧 Linux Service
-
-Run the gateway as a systemd user service so it starts automatically and restarts on failure.
-
-**1. Find the superbot binary path:**
-
-```bash
-which superbot   # e.g. /home/user/.local/bin/superbot
-```
-
-**2. Create the service file** at `~/.config/systemd/user/superbot-gateway.service` (replace `ExecStart` path if needed):
-
-```ini
-[Unit]
-Description=Nanobot Gateway
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/superbot gateway
-Restart=always
-RestartSec=10
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=%h
-
-[Install]
-WantedBy=default.target
-```
-
-**3. Enable and start:**
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now superbot-gateway
-```
-
-**Common operations:**
-
-```bash
-systemctl --user status superbot-gateway        # check status
-systemctl --user restart superbot-gateway       # restart after config changes
-journalctl --user -u superbot-gateway -f        # follow logs
-```
-
-If you edit the `.service` file itself, run `systemctl --user daemon-reload` before restarting.
-
-> **Note:** User services only run while you are logged in. To keep the gateway running after logout, enable lingering:
->
-> ```bash
-> loginctl enable-linger $USER
-> ```
-
 ## 📁 Project Structure
 
 ```
@@ -758,7 +736,7 @@ superbot/
 ├── bus/            # 🚌 Message routing
 ├── cron/           # ⏰ Scheduled tasks
 ├── heartbeat/      # 💓 Proactive wake-up
-├── providers/      # 🤖 LLM providers (OpenRouter, etc.)
+├── providers/      # 🤖 LLM providers
 ├── session/        # 💬 Conversation sessions
 ├── config/         # ⚙️ Configuration
 └── cli/            # 🖥️ Commands

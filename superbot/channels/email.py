@@ -4,6 +4,7 @@ import asyncio
 import html
 import imaplib
 import re
+import socket
 import time
 import smtplib
 import ssl
@@ -20,6 +21,7 @@ from loguru import logger
 
 from superbot.bus.events import OutboundMessage
 from superbot.bus.queue import MessageBus
+from superbot.config.schema import ProxyConfig
 from superbot.channels.base import BaseChannel
 from superbot.config.schema import EmailConfig
 
@@ -52,9 +54,17 @@ class EmailChannel(BaseChannel):
         "Dec",
     )
 
-    def __init__(self, config: EmailConfig, bus: MessageBus):
+    def __init__(
+        self,
+        config: EmailConfig,
+        bus: MessageBus,
+        proxy_config: ProxyConfig | None = None,
+        channels: dict | None = None,
+    ):
         super().__init__(config, bus)
         self.config: EmailConfig = config
+        self.proxy_config = proxy_config or ProxyConfig()
+        self.channels = channels or {}  # Reference to all channels for notification
         self._last_subject_by_chat: dict[str, str] = {}
         self._last_message_id_by_chat: dict[str, str] = {}
         self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
@@ -76,28 +86,44 @@ class EmailChannel(BaseChannel):
         logger.info("Starting Email channel (IMAP polling mode)...")
 
         poll_seconds = max(5, int(self.config.poll_interval_seconds))
+        max_retries = 2
         while self._running:
-            try:
-                inbound_items = await asyncio.to_thread(self._fetch_new_messages)
-                for item in inbound_items:
-                    sender = item["sender"]
-                    subject = item.get("subject", "")
-                    message_id = item.get("message_id", "")
+            inbound_items = []
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    inbound_items = await asyncio.to_thread(self._fetch_new_messages)
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        logger.warning("Email polling attempt {} failed: {}, retrying...", attempt + 1, e)
+                    else:
+                        logger.error("Email polling failed after {} attempts: {}", max_retries + 1, e)
 
-                    if subject:
-                        self._last_subject_by_chat[sender] = subject
-                    if message_id:
-                        self._last_message_id_by_chat[sender] = message_id
+            if last_error and not inbound_items:
+                # All retries failed, wait and continue
+                await asyncio.sleep(poll_seconds)
+                continue
 
-                    await self._handle_message(
-                        sender_id=sender,
-                        chat_id=sender,
-                        content=item["content"],
-                        media=item.get("media", []),
-                        metadata=item.get("metadata", {}),
-                    )
-            except Exception as e:
-                logger.error("Email polling error: {}", e)
+            for item in inbound_items:
+                sender = item["sender"]
+                subject = item.get("subject", "")
+                message_id = item.get("message_id", "")
+
+                if subject:
+                    self._last_subject_by_chat[sender] = subject
+                if message_id:
+                    self._last_message_id_by_chat[sender] = message_id
+
+                await self._handle_message(
+                    sender_id=sender,
+                    chat_id=sender,
+                    content=item["content"],
+                    media=item.get("media", []),
+                    metadata=item.get("metadata", {}),
+                )
 
             await asyncio.sleep(poll_seconds)
 
@@ -106,7 +132,31 @@ class EmailChannel(BaseChannel):
         self._running = False
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send email via SMTP."""
+        """Send email notification or route to other channels."""
+
+        # Check if we should route to another channel (like Feishu) for notification
+        notification_channel = self._get_notification_channel()
+        if notification_channel and notification_channel != "email":
+            # Route to other channel (e.g., Feishu) for notification
+            logger.info("Routing email notification to channel: {}", notification_channel)
+            other_channel = self.channels.get(notification_channel)
+            if other_channel:
+                # Create a new message for the other channel
+                notify_msg = OutboundMessage(
+                    channel=notification_channel,
+                    chat_id=msg.metadata.get("notify_chat_id", "default"),
+                    content=msg.content,
+                    metadata=msg.metadata,
+                )
+                try:
+                    await other_channel.send(notify_msg)
+                    logger.info("Notification sent via {}", notification_channel)
+                    return
+                except Exception as e:
+                    logger.error("Failed to send via {}: {}", notification_channel, e)
+                    # Fall through to email
+
+        # Original email sending logic
         if not self.config.consent_granted:
             logger.warning("Skip email send: consent_granted is false")
             return
@@ -118,15 +168,6 @@ class EmailChannel(BaseChannel):
         to_addr = msg.chat_id.strip()
         if not to_addr:
             logger.warning("Email channel missing recipient address")
-            return
-
-        # Determine if this is a reply (recipient has sent us an email before)
-        is_reply = to_addr in self._last_subject_by_chat
-        force_send = bool((msg.metadata or {}).get("force_send"))
-
-        # autoReplyEnabled only controls automatic replies, not proactive sends
-        if is_reply and not self.config.auto_reply_enabled and not force_send:
-            logger.info("Skip automatic email reply to {}: auto_reply_enabled is false", to_addr)
             return
 
         base_subject = self._last_subject_by_chat.get(to_addr, "superbot reply")
@@ -174,7 +215,55 @@ class EmailChannel(BaseChannel):
         return True
 
     def _smtp_send(self, msg: EmailMessage) -> None:
-        timeout = 60
+        timeout = 120
+
+        # Check if proxy is enabled
+        use_proxy = self.config.use_proxy and self.proxy_config.enabled
+        proxy_url = None
+
+        if use_proxy:
+            proxy_url = self.proxy_config.socks_proxy or self.proxy_config.https_proxy or self.proxy_config.http_proxy
+            if proxy_url:
+                logger.info("Using proxy for SMTP: {}", proxy_url)
+
+        if use_proxy and proxy_url and proxy_url.startswith("socks"):
+            # Use SOCKS proxy for SMTP - set default proxy and patch socket
+            try:
+                import socks
+                import re
+                # Parse proxy host and port
+                match = re.search(r"socks[45]?://([^:]+):(\d+)", proxy_url)
+                if match:
+                    proxy_host = match.group(1)
+                    proxy_port = int(match.group(2))
+                    proxy_type = socks.SOCKS5 if "5" in proxy_url else socks.SOCKS4
+                    # Set default proxy for this thread
+                    socks.set_default_proxy(proxy_type, proxy_host, proxy_port)
+                    # Patch socket to use proxy
+                    original_socket = socket.socket
+                    socket.socket = socks.socksocket
+                    try:
+                        smtp = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
+                    finally:
+                        # Restore original socket
+                        socket.socket = original_socket
+                        socks.set_default_proxy()
+                else:
+                    smtp = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
+            except ImportError:
+                logger.warning("PySocks not installed, connecting without proxy")
+                smtp = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
+            try:
+                if self.config.smtp_use_tls:
+                    smtp.starttls(context=ssl.create_default_context())
+                smtp.login(self.config.smtp_username, self.config.smtp_password)
+                smtp.send_message(msg)
+                smtp.quit()
+                return
+            except Exception:
+                smtp.quit()
+                raise
+
         if self.config.smtp_use_ssl:
             with smtplib.SMTP_SSL(
                 self.config.smtp_host,
@@ -238,9 +327,48 @@ class EmailChannel(BaseChannel):
         mailbox = self.config.imap_mailbox or "INBOX"
 
         # IMAP connection timeout
-        imap_timeout = 30
+        imap_timeout = 60
 
-        if self.config.imap_use_ssl:
+        # Check if proxy is enabled
+        use_proxy = self.config.use_proxy and self.proxy_config.enabled
+        proxy_url = None
+
+        if use_proxy:
+            proxy_url = self.proxy_config.socks_proxy or self.proxy_config.https_proxy or self.proxy_config.http_proxy
+            if proxy_url:
+                logger.info("Using proxy for IMAP: {}", proxy_url)
+
+        if use_proxy and proxy_url and proxy_url.startswith("socks"):
+            # Use SOCKS proxy - set default proxy and patch socket
+            try:
+                import socks
+                import re
+                # Parse proxy host and port
+                match = re.search(r"socks[45]?://([^:]+):(\d+)", proxy_url)
+                if match:
+                    proxy_host = match.group(1)
+                    proxy_port = int(match.group(2))
+                    proxy_type = socks.SOCKS5 if "5" in proxy_url else socks.SOCKS4
+                    # Set default proxy for this thread
+                    socks.set_default_proxy(proxy_type, proxy_host, proxy_port)
+                    # Patch socket to use proxy
+                    original_socket = socket.socket
+                    socket.socket = socks.socksocket
+                    try:
+                        if self.config.imap_use_ssl:
+                            client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
+                        else:
+                            client = imaplib.IMAP4(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
+                    finally:
+                        # Restore original socket
+                        socket.socket = original_socket
+                        socks.set_default_proxy()
+                else:
+                    client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
+            except ImportError:
+                logger.warning("PySocks not installed, connecting without proxy")
+                client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
+        elif self.config.imap_use_ssl:
             client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
         else:
             client = imaplib.IMAP4(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
@@ -328,7 +456,11 @@ class EmailChannel(BaseChannel):
                         self._processed_uids = set(list(self._processed_uids)[len(self._processed_uids) // 2:])
 
                 if mark_seen:
-                    client.store(imap_id, "+FLAGS", "\\Seen")
+                    try:
+                        client.store(imap_id, "+FLAGS", "\\Seen")
+                        logger.debug("Marked email as seen: {}", subject[:30])
+                    except Exception as e:
+                        logger.error("Failed to mark email as seen: {}", e)
         finally:
             try:
                 client.logout()
@@ -485,6 +617,18 @@ class EmailChannel(BaseChannel):
             logger.error("Error extracting email attachments: {}", e)
 
         return media_paths, attachment_info
+
+    def _get_notification_channel(self) -> str | None:
+        """Get the first available non-email channel for notifications.
+
+        Uses the order from config file (excluding email).
+        """
+        for channel_name in self.channels:
+            if channel_name != "email":
+                logger.info("Found notification channel: {}", channel_name)
+                return channel_name
+
+        return None
 
     def _reply_subject(self, base_subject: str) -> str:
         subject = (base_subject or "").strip() or "superbot reply"

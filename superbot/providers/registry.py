@@ -84,63 +84,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     # === Gateways (detected by api_key / api_base, not model name) =========
     # Gateways can route any model, so they win in fallback.
 
-    # OpenRouter: global gateway, keys start with "sk-or-"
-    ProviderSpec(
-        name="openrouter",
-        keywords=("openrouter",),
-        env_key="OPENROUTER_API_KEY",
-        display_name="OpenRouter",
-        litellm_prefix="openrouter",        # claude-3 → openrouter/claude-3
-        skip_prefixes=(),
-        env_extras=(),
-        is_gateway=True,
-        is_local=False,
-        detect_by_key_prefix="sk-or-",
-        detect_by_base_keyword="openrouter",
-        default_api_base="https://openrouter.ai/api/v1",
-        strip_model_prefix=False,
-        model_overrides=(),
-        supports_prompt_caching=True,
-    ),
-
-    # AiHubMix: global gateway, OpenAI-compatible interface.
-    # strip_model_prefix=True: it doesn't understand "anthropic/claude-3",
-    # so we strip to bare "claude-3" then re-prefix as "openai/claude-3".
-    ProviderSpec(
-        name="aihubmix",
-        keywords=("aihubmix",),
-        env_key="OPENAI_API_KEY",           # OpenAI-compatible
-        display_name="AiHubMix",
-        litellm_prefix="openai",            # → openai/{model}
-        skip_prefixes=(),
-        env_extras=(),
-        is_gateway=True,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="aihubmix",
-        default_api_base="https://aihubmix.com/v1",
-        strip_model_prefix=True,            # anthropic/claude-3 → claude-3 → openai/claude-3
-        model_overrides=(),
-    ),
-
-    # SiliconFlow (硅基流动): OpenAI-compatible gateway, model names keep org prefix
-    ProviderSpec(
-        name="siliconflow",
-        keywords=("siliconflow",),
-        env_key="OPENAI_API_KEY",
-        display_name="SiliconFlow",
-        litellm_prefix="openai",
-        skip_prefixes=(),
-        env_extras=(),
-        is_gateway=True,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="siliconflow",
-        default_api_base="https://api.siliconflow.cn/v1",
-        strip_model_prefix=False,
-        model_overrides=(),
-    ),
-
     # VolcEngine (火山引擎): OpenAI-compatible gateway
     ProviderSpec(
         name="volcengine",
@@ -312,30 +255,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
-    # Moonshot: Kimi models, needs "moonshot/" prefix.
-    # LiteLLM requires MOONSHOT_API_BASE env var to find the endpoint.
-    # Kimi K2.5 API enforces temperature >= 1.0.
-    ProviderSpec(
-        name="moonshot",
-        keywords=("moonshot", "kimi"),
-        env_key="MOONSHOT_API_KEY",
-        display_name="Moonshot",
-        litellm_prefix="moonshot",          # kimi-k2.5 → moonshot/kimi-k2.5
-        skip_prefixes=("moonshot/", "openrouter/"),
-        env_extras=(
-            ("MOONSHOT_API_BASE", "{api_base}"),
-        ),
-        is_gateway=False,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="",
-        default_api_base="https://api.moonshot.ai/v1",   # intl; use api.moonshot.cn for China
-        strip_model_prefix=False,
-        model_overrides=(
-            ("kimi-k2.5", {"temperature": 1.0}),
-        ),
-    ),
-
     # === Local deployment (matched by config key, NOT by api_base) =========
 
     # vLLM / any OpenAI-compatible local server.
@@ -359,24 +278,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
 
     # === Auxiliary (not a primary LLM provider) ============================
 
-    # Groq: mainly used for Whisper voice transcription, also usable for LLM.
-    # Needs "groq/" prefix for LiteLLM routing. Placed last — it rarely wins fallback.
-    ProviderSpec(
-        name="groq",
-        keywords=("groq",),
-        env_key="GROQ_API_KEY",
-        display_name="Groq",
-        litellm_prefix="groq",              # llama3-8b-8192 → groq/llama3-8b-8192
-        skip_prefixes=("groq/",),           # avoid double-prefix
-        env_extras=(),
-        is_gateway=False,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="",
-        default_api_base="",
-        strip_model_prefix=False,
-        model_overrides=(),
-    ),
 )
 
 

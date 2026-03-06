@@ -74,7 +74,7 @@ class ChannelManager:
             try:
                 from superbot.channels.email import EmailChannel
                 self.channels["email"] = EmailChannel(
-                    self.config.channels.email, self.bus
+                    self.config.channels.email, self.bus, self.config.proxy, self.channels
                 )
                 logger.info("Email channel enabled")
             except ImportError as e:
