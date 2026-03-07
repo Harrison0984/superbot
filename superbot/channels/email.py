@@ -36,6 +36,9 @@ class EmailChannel(BaseChannel):
 
     Outbound:
     - Send responses via SMTP back to the sender address.
+
+    Note: consent_granted config was removed - email access is now controlled
+    by enabling/disabling the channel directly in config (channels.email.enabled).
     """
 
     name = "email"
@@ -72,13 +75,6 @@ class EmailChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start polling IMAP for inbound emails."""
-        if not self.config.consent_granted:
-            logger.warning(
-                "Email channel disabled: consent_granted is false. "
-                "Set channels.email.consentGranted=true after explicit user permission."
-            )
-            return
-
         if not self._validate_config():
             return
 
@@ -132,35 +128,44 @@ class EmailChannel(BaseChannel):
         self._running = False
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send email notification or route to other channels."""
+        """Send email or route to other channels."""
 
-        # Check if we should route to another channel (like Feishu) for notification
-        notification_channel = self._get_notification_channel()
-        if notification_channel and notification_channel != "email":
-            # Route to other channel (e.g., Feishu) for notification
-            logger.info("Routing email notification to channel: {}", notification_channel)
-            other_channel = self.channels.get(notification_channel)
-            if other_channel:
-                # Create a new message for the other channel
-                notify_msg = OutboundMessage(
-                    channel=notification_channel,
-                    chat_id=msg.metadata.get("notify_chat_id", "default"),
-                    content=msg.content,
-                    metadata=msg.metadata,
-                )
-                try:
-                    await other_channel.send(notify_msg)
-                    logger.info("Notification sent via {}", notification_channel)
-                    return
-                except Exception as e:
-                    logger.error("Failed to send via {}: {}", notification_channel, e)
-                    # Fall through to email
+        # If msg.channel != "email", user is replying from another channel → send email
+        # If msg.channel == "email", this is a response to inbound email → route to other channel
 
-        # Original email sending logic
-        if not self.config.consent_granted:
-            logger.warning("Skip email send: consent_granted is false")
+        if msg.channel != "email":
+            # User is sending an email (reply from Feishu/Telegram/etc.)
+            logger.info("Sending email to {}", msg.chat_id)
+        else:
+            # Response to inbound email → route to other channel for notification
+            notification_channel = self._get_notification_channel()
+            if notification_channel and notification_channel != "email":
+                logger.info("Routing email response to channel: {}", notification_channel)
+                other_channel = self.channels.get(notification_channel)
+                if other_channel:
+                    # Get user_id from target channel config, fallback to metadata
+                    target_user_id = None
+                    other_channel_cfg = getattr(other_channel, "config", None)
+                    if other_channel_cfg and hasattr(other_channel_cfg, "user_id"):
+                        target_user_id = getattr(other_channel_cfg, "user_id", None)
+                    notify_chat_id = msg.metadata.get("notify_chat_id") or target_user_id or "default"
+
+                    notify_msg = OutboundMessage(
+                        channel=notification_channel,
+                        chat_id=notify_chat_id,
+                        content=msg.content,
+                        metadata=msg.metadata,
+                    )
+                    try:
+                        await other_channel.send(notify_msg)
+                        logger.info("Notification sent via {}", notification_channel)
+                        return
+                    except Exception as e:
+                        logger.error("Failed to send via {}: {}", notification_channel, e)
+            # If no notification channel, skip (don't send email reply)
             return
 
+        # Send email
         if not self.config.smtp_host:
             logger.warning("Email channel SMTP host not configured")
             return

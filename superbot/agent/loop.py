@@ -114,6 +114,32 @@ class AgentLoop:
         self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
+
+        # Initialize Claude MCP client if enabled
+        self._claude_mcp = None
+        self._claude_channel = None  # Reusable ClaudeChannel instance
+        if channels_config and getattr(channels_config, "claude", None):
+            claude_config = channels_config.claude
+            if claude_config.enabled:
+                from superbot.channels.claude_mcp import ClaudeMCPClient
+                from superbot.channels.claude_channel import ClaudeChannel
+                self._claude_mcp = ClaudeMCPClient(
+                    workdir=claude_config.workdir,
+                    script_path=claude_config.script_path,
+                    auto_start=claude_config.auto_start,
+                    retry_count=claude_config.retry_count,
+                    retry_delay=claude_config.retry_delay,
+                    retry_backoff=claude_config.retry_backoff,
+                )
+                # Create reusable ClaudeChannel instance
+                self._claude_channel = ClaudeChannel(
+                    config=None,
+                    channels={},
+                    mcp_client=self._claude_mcp,
+                    bus=self.bus,
+                )
+                logger.info("Claude MCP client initialized: workdir={}, script={}", claude_config.workdir, claude_config.script_path)
+
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -546,6 +572,39 @@ class AgentLoop:
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+
+        # Check for @claude request
+        if self._claude_mcp:
+            from superbot.channels.claude_channel import ClaudeChannel
+            prompt = ClaudeChannel.detect_claude_request(msg.content)
+            if prompt:
+                logger.info("Detected @claude request: {}", prompt[:50])
+                # Ensure MCP is available
+                if await self._claude_mcp.ensure_available():
+                    # Get feishu config if available
+                    feishu_config = None
+                    if self.channels_config:
+                        feishu_config = getattr(self.channels_config, "feishu", None)
+
+                    # Use reusable ClaudeChannel instance for preprocessing
+                    processed_prompt = await self._claude_channel.preprocess_content(
+                        prompt, msg.media, feishu_config
+                    )
+                    # Call Claude MCP
+                    try:
+                        result = await self._claude_mcp.call(processed_prompt)
+                        logger.info("Claude MCP response: {}", result[:100] if result else "empty")
+                        # Return result to original channel
+                        return OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=result or "No response from Claude",
+                        )
+                    except Exception as e:
+                        logger.error("Claude MCP call failed: {}", e)
+                        # Fall through to normal LLM processing
+                else:
+                    logger.warning("Claude MCP unavailable after retry, falling back to default LLM")
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)

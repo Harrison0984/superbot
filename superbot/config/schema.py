@@ -42,7 +42,7 @@ class FeishuConfig(Base):
     encrypt_key: str = ""  # Encrypt Key for event subscription (optional)
     verification_token: str = ""  # Verification Token for event subscription (optional)
     allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
-    react_emoji: str = "🐈"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE, 🐈)
+    react_emoji: str = "HEART"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE, HEART)
     user_id: str = ""  # User open_id for notification recipient (e.g., "ou_xxx")
 
 
@@ -50,7 +50,6 @@ class EmailConfig(Base):
     """Email channel configuration (IMAP inbound + SMTP outbound)."""
 
     enabled: bool = False
-    consent_granted: bool = False  # Explicit owner permission to access mailbox data
     use_proxy: bool = False  # Use global proxy settings
 
     # IMAP (receive)
@@ -86,6 +85,20 @@ class QQConfig(Base):
     secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
     allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
 
+
+class ClaudeConfig(Base):
+    """Claude MCP channel configuration (stdio mode)."""
+
+    enabled: bool = True
+    auto_start: bool = True
+    retry_count: int = 3
+    retry_delay: float = 1.0
+    retry_backoff: float = 2.0
+    timeout: int = 120
+    workdir: str = ""
+    script_path: str = "superbot/scripts/fastmcp_server.py"
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
@@ -96,6 +109,7 @@ class ChannelsConfig(Base):
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
 
 
 class AgentDefaults(Base):
