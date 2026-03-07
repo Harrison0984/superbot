@@ -142,7 +142,26 @@ class MemoryStore:
                 if update != current_memory:
                     self.write_long_term(update)
 
-            session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
+            # After consolidation, remove tool-related messages to avoid sending old tool_call_ids to LLM
+            # Tool call IDs are session-specific and become invalid after session restore/consolidation
+            if archive_all:
+                session.messages = []
+                session.last_consolidated = 0
+            else:
+                session.last_consolidated = len(session.messages) - keep_count
+                # Filter out tool calls and results from remaining messages
+                filtered = []
+                for msg in session.messages[session.last_consolidated:]:
+                    role = msg.get("role")
+                    if role == "tool":
+                        continue  # Skip tool results
+                    if role == "assistant" and msg.get("tool_calls"):
+                        # Remove tool_calls from assistant messages
+                        filtered.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                    else:
+                        filtered.append(msg)
+                session.messages = session.messages[:session.last_consolidated] + filtered
+
             logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)
             return True
         except Exception:
