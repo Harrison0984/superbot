@@ -4,13 +4,16 @@ import html
 import json
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
 
 from superbot.agent.tools.base import Tool, tool_error
+
+if TYPE_CHECKING:
+    from superbot.config.schema import ProxyConfig, WebToolsConfig
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -44,7 +47,21 @@ def _validate_url(url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-class WebSearchTool(Tool):
+class ProxyResolver:
+    """Mixin to resolve proxy from config, same as EmailChannel."""
+
+    config: "WebToolsConfig | None"
+    proxy_config: "ProxyConfig"
+
+    @property
+    def proxy(self) -> str | None:
+        """Resolve proxy from config, same as EmailChannel."""
+        if self.config and self.config.use_proxy and self.proxy_config.enabled:
+            return self.proxy_config.socks_proxy or self.proxy_config.https_proxy or self.proxy_config.http_proxy
+        return None
+
+
+class WebSearchTool(Tool, ProxyResolver):
     """Search the web using Brave Search API."""
 
     name = "web_search"
@@ -58,10 +75,18 @@ class WebSearchTool(Tool):
         "required": ["query"]
     }
 
-    def __init__(self, api_key: str | None = None, max_results: int = 5, proxy: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        max_results: int = 5,
+        config: "WebToolsConfig | None" = None,
+        proxy_config: "ProxyConfig | None" = None,
+    ):
+        from superbot.config.schema import ProxyConfig
         self._init_api_key = api_key
         self.max_results = max_results
-        self.proxy = proxy
+        self.config = config
+        self.proxy_config = proxy_config or ProxyConfig()
 
     @property
     def api_key(self) -> str:
@@ -106,7 +131,7 @@ class WebSearchTool(Tool):
             return tool_error("search_error", str(e))
 
 
-class WebFetchTool(Tool):
+class WebFetchTool(Tool, ProxyResolver):
     """Fetch and extract content from a URL using Readability."""
 
     name = "web_fetch"
@@ -121,9 +146,16 @@ class WebFetchTool(Tool):
         "required": ["url"]
     }
 
-    def __init__(self, max_chars: int = 50000, proxy: str | None = None):
+    def __init__(
+        self,
+        max_chars: int = 50000,
+        config: "WebToolsConfig | None" = None,
+        proxy_config: "ProxyConfig | None" = None,
+    ):
+        from superbot.config.schema import ProxyConfig
         self.max_chars = max_chars
-        self.proxy = proxy
+        self.config = config
+        self.proxy_config = proxy_config or ProxyConfig()
 
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         from readability import Document

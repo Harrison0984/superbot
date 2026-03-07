@@ -14,7 +14,7 @@ from superbot.agent.tools.shell import ExecTool
 from superbot.agent.tools.web import WebFetchTool, WebSearchTool
 from superbot.bus.events import InboundMessage
 from superbot.bus.queue import MessageBus
-from superbot.config.schema import ExecToolConfig
+from superbot.config.schema import ExecToolConfig, ProxyConfig, WebToolsConfig
 from superbot.providers.base import LLMProvider
 
 
@@ -31,11 +31,12 @@ class SubagentManager:
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         brave_api_key: str | None = None,
-        web_proxy: str | None = None,
+        web_config: "WebToolsConfig | None" = None,
+        proxy_config: "ProxyConfig | None" = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
     ):
-        from superbot.config.schema import ExecToolConfig
+        from superbot.config.schema import ExecToolConfig, ProxyConfig, WebToolsConfig
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
@@ -44,7 +45,8 @@ class SubagentManager:
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.brave_api_key = brave_api_key
-        self.web_proxy = web_proxy
+        self.web_config = web_config
+        self.proxy_config = proxy_config or ProxyConfig()
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
@@ -106,8 +108,15 @@ class SubagentManager:
                 restrict_to_workspace=self.restrict_to_workspace,
                 path_append=self.exec_config.path_append,
             ))
-            tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
-            tools.register(WebFetchTool(proxy=self.web_proxy))
+            tools.register(WebSearchTool(
+                api_key=self.brave_api_key,
+                config=self.web_config,
+                proxy_config=self.proxy_config,
+            ))
+            tools.register(WebFetchTool(
+                config=self.web_config,
+                proxy_config=self.proxy_config,
+            ))
             
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
