@@ -342,7 +342,7 @@ def gateway(
     config = load_config()
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
-    provider = _make_provider(config)
+    main_provider, memory_provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
 
     # Create cron service first (callback set after agent creation)
@@ -352,7 +352,8 @@ def gateway(
     # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
-        provider=provider,
+        provider=main_provider,
+        memory_provider=memory_provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,
@@ -472,7 +473,7 @@ def agent(
     sync_workspace_templates(config.workspace_path)
 
     bus = MessageBus()
-    provider = _make_provider(config)
+    main_provider, memory_provider = _make_provider(config)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
@@ -485,7 +486,8 @@ def agent(
 
     agent_loop = AgentLoop(
         bus=bus,
-        provider=provider,
+        provider=main_provider,
+        memory_provider=memory_provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,
