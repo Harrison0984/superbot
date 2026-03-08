@@ -36,14 +36,21 @@ class MemoryConsolidationIdleTask(IdleTask):
             return False
 
         # 检查是否有需要 consolidation 的 session
-        for session in agent.sessions.all():
-            unconsolidated = len(session.messages) - session.last_consolidated
-            if unconsolidated >= agent.memory_window:
-                return True
+        for session_info in agent.sessions.list_sessions():
+            key = session_info.get("key")
+            if key:
+                session = agent.sessions.get_or_create(key)
+                unconsolidated = len(session.messages) - session.last_consolidated
+                if unconsolidated >= agent.memory_window:
+                    return True
         return False
 
     async def execute(self, agent: "AgentLoop") -> None:
-        for session in agent.sessions.all():
+        for session_info in agent.sessions.list_sessions():
+            key = session_info.get("key")
+            if not key:
+                continue
+            session = agent.sessions.get_or_create(key)
             unconsolidated = len(session.messages) - session.last_consolidated
             if unconsolidated >= agent.memory_window:
                 logger.info("Running consolidation for session {}", session.key)

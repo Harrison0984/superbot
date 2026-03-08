@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import weakref
 from contextlib import AsyncExitStack
 from datetime import datetime
@@ -484,8 +485,6 @@ class AgentLoop:
         if self._last_task_end_time is None:
             return
 
-        import time
-
         idle_seconds = time.time() - self._last_task_end_time
 
         if idle_seconds >= self._idle_threshold:
@@ -644,7 +643,6 @@ class AgentLoop:
                 ))
             finally:
                 # 记录任务结束时间，用于计算空闲时长
-                import time
                 self._last_task_end_time = time.time()
 
     async def close_mcp(self) -> None:
