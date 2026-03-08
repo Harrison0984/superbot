@@ -221,11 +221,11 @@ def _create_local_provider(local_model, model: str):
 
 
 def _make_provider(config: Config):
-    """Create the appropriate LLM provider from config.
+    """Create LLM provider based on config. Returns (main_provider, memory_provider).
 
     Priority:
-    1. localModel: if enabled, use local model (mlx or vllm)
-    2. agents.defaults.provider: use specified online provider
+    1. localModel: if enabled, use local model (mlx or vllm) for memory provider
+    2. agents.defaults.provider: use specified online provider for main provider
     """
     from superbot.providers.custom_provider import CustomProvider
     from superbot.providers.litellm_provider import LiteLLMProvider
@@ -235,10 +235,11 @@ def _make_provider(config: Config):
 
     model = config.agents.defaults.model
 
-    # Priority 1: Check local model first
+    # Create memory provider if local_model is enabled
+    memory_provider = None
     local_model = config.local_model
     if local_model and local_model.enabled and local_model.path:
-        return _create_local_provider(local_model, model)
+        memory_provider = _create_local_provider(local_model, model)
 
     # Priority 2: Use agents.defaults.provider
     provider_name = config.agents.defaults.provider
@@ -246,39 +247,51 @@ def _make_provider(config: Config):
 
     # MLX: Apple Silicon local models
     if provider_name == "mlx":
-        return MLXProvider(
-            api_key=p.api_key if p else None,
-            api_base=p.api_base if p and p.api_base else None,
-            default_model=model,
+        return (
+            MLXProvider(
+                api_key=p.api_key if p else None,
+                api_base=p.api_base if p and p.api_base else None,
+                default_model=model,
+            ),
+            memory_provider,
         )
 
     # vLLM: local model server
     if provider_name == "vllm":
         vllm_config = config.providers.vllm
-        return CustomProvider(
-            api_key=vllm_config.api_key if vllm_config.api_key else "not-required",
-            api_base=vllm_config.api_base if vllm_config.api_base else "http://localhost:8000/v1",
-            default_model=model,
+        return (
+            CustomProvider(
+                api_key=vllm_config.api_key if vllm_config.api_key else "not-required",
+                api_base=vllm_config.api_base if vllm_config.api_base else "http://localhost:8000/v1",
+                default_model=model,
+            ),
+            memory_provider,
         )
 
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        return OpenAICodexProvider(default_model=model)
+        return (OpenAICodexProvider(default_model=model), memory_provider)
 
     # MiniMax: use native API (LiteLLM has authentication issues)
     if provider_name == "minimax":
-        return MiniMaxProvider(
-            api_key=p.api_key if p else None,
-            api_base=p.api_base if p and p.api_base else None,
-            default_model=model,
+        return (
+            MiniMaxProvider(
+                api_key=p.api_key if p else None,
+                api_base=p.api_base if p and p.api_base else None,
+                default_model=model,
+            ),
+            memory_provider,
         )
 
     # Custom: direct OpenAI-compatible endpoint
     if provider_name == "custom":
-        return CustomProvider(
-            api_key=p.api_key if p else "no-key",
-            api_base=p.api_base if p and p.api_base else "http://localhost:8000/v1",
-            default_model=model,
+        return (
+            CustomProvider(
+                api_key=p.api_key if p else "no-key",
+                api_base=p.api_base if p and p.api_base else "http://localhost:8000/v1",
+                default_model=model,
+            ),
+            memory_provider,
         )
 
     # Fallback: LiteLLM for other providers
@@ -289,12 +302,15 @@ def _make_provider(config: Config):
         console.print("Set one in ~/.superbot/config.json under providers section")
         raise typer.Exit(1)
 
-    return LiteLLMProvider(
-        api_key=p.api_key if p else None,
-        api_base=config.get_api_base(model),
-        default_model=model,
-        extra_headers=p.extra_headers if p else None,
-        provider_name=provider_name,
+    return (
+        LiteLLMProvider(
+            api_key=p.api_key if p else None,
+            api_base=config.get_api_base(model),
+            default_model=model,
+            extra_headers=p.extra_headers if p else None,
+            provider_name=provider_name,
+        ),
+        memory_provider,
     )
 
 
