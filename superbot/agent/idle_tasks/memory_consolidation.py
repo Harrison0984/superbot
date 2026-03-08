@@ -1,6 +1,5 @@
 """Memory consolidation idle task."""
 
-import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -16,7 +15,6 @@ class MemoryConsolidationIdleTask(IdleTask):
 
     def __init__(self, min_idle_seconds: int = DEFAULT_IDLE_THRESHOLD):
         self.min_idle_seconds = min_idle_seconds
-        self._last_run: float | None = None
 
     @property
     def name(self) -> str:
@@ -55,5 +53,3 @@ class MemoryConsolidationIdleTask(IdleTask):
             if unconsolidated >= agent.memory_window:
                 logger.info("Running consolidation for session {}", session.key)
                 await agent._consolidate_memory(session)
-
-        self._last_run = time.time()
