@@ -32,6 +32,7 @@ from superbot.providers.base import LLMProvider
 from superbot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
+    from superbot.agent.idle_task import IdleTask
     from superbot.config.schema import ChannelsConfig, ExecToolConfig, ProxyConfig, WebToolsConfig
     from superbot.cron.service import CronService
 
@@ -118,6 +119,14 @@ class AgentLoop:
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
 
+        # Idle task system
+        from superbot.agent.idle_task import DEFAULT_IDLE_THRESHOLD
+        self._idle_tasks: dict[str, "IdleTask"] = {}  # task_type -> task
+        self._running_idle_tasks: dict[str, asyncio.Task] = {}  # task_type -> running task
+        self._last_task_end_time: float | None = None  # 上一个任务结束时间
+        self._idle_check_interval = 60  # 空闲检查间隔（秒）
+        self._idle_threshold = DEFAULT_IDLE_THRESHOLD  # 默认空闲阈值（秒）
+
         # Initialize Claude MCP client if enabled
         self._claude_mcp = None
         self._claude_channel = None  # Reusable ClaudeChannel instance
@@ -175,6 +184,43 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    # Idle task methods
+
+    def register_idle_task(
+        self,
+        task: "IdleTask",
+        idle_threshold_seconds: int | None = None,
+    ) -> None:
+        """注册空闲任务
+
+        Args:
+            task: 要注册的任务实例
+            idle_threshold_seconds: 任务的空闲阈值（秒），默认使用任务自身的 idle_threshold_seconds
+        """
+        from superbot.agent.idle_task import DEFAULT_IDLE_THRESHOLD
+        threshold = idle_threshold_seconds if idle_threshold_seconds is not None else task.idle_threshold_seconds
+        # 存储阈值信息
+        task._registered_threshold = threshold  # type: ignore[attr-defined]
+        self._idle_tasks[task.task_type] = task
+        logger.info(
+            "Registered idle task: {} (type: {}, threshold: {}s)",
+            task.name,
+            task.task_type,
+            threshold,
+        )
+
+    def unregister_idle_task(self, task_type: str) -> bool:
+        """注销空闲任务"""
+        if task_type in self._idle_tasks:
+            task = self._idle_tasks.pop(task_type)
+            logger.info("Unregistered idle task: {} (type: {})", task.name, task_type)
+            return True
+        return False
+
+    def list_idle_tasks(self) -> list[str]:
+        """列出已注册的空闲任务类型"""
+        return list(self._idle_tasks.keys())
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -382,10 +428,11 @@ class AgentLoop:
 
         while self._running:
             try:
-                # 同时监听 inbound 和 tool_events
+                # 同时监听 inbound、tool_events 和 idle_timer
                 tasks = [
                     asyncio.create_task(self.bus.consume_inbound()),
-                    asyncio.create_task(self.bus.tool_events.get())
+                    asyncio.create_task(self.bus.tool_events.get()),
+                    asyncio.create_task(self._idle_timer()),
                 ]
                 done, pending = await asyncio.wait(
                     tasks,
@@ -405,6 +452,9 @@ class AgentLoop:
                     if isinstance(result, ToolEvent):
                         # 处理工具事件
                         asyncio.create_task(self._handle_tool_event(result))
+                    elif result is None:
+                        # idle_timer 触发，检查空闲任务
+                        await self._check_and_run_idle_tasks()
                     else:
                         # 处理用户消息
                         msg = result
@@ -424,6 +474,59 @@ class AgentLoop:
                 break
             except Exception:
                 logger.exception("Error in agent loop")
+
+    async def _idle_timer(self) -> None:
+        """空闲定时器，定期触发检查空闲任务"""
+        await asyncio.sleep(self._idle_check_interval)
+
+    async def _check_and_run_idle_tasks(self) -> None:
+        """检查并执行空闲任务（由定时器调用）"""
+        if self._last_task_end_time is None:
+            return
+
+        import time
+
+        idle_seconds = time.time() - self._last_task_end_time
+
+        if idle_seconds >= self._idle_threshold:
+            await self._run_idle_tasks(idle_seconds)
+
+    async def _run_idle_tasks(self, idle_seconds: float) -> None:
+        """检查并执行空闲任务
+
+        Args:
+            idle_seconds: 当前空闲时长（秒）
+        """
+        for task_type, task in list(self._idle_tasks.items()):
+            # 检查是否已在运行（同类型过滤）
+            if task_type in self._running_idle_tasks:
+                continue
+
+            # 获取任务的空闲阈值
+            threshold = getattr(task, "_registered_threshold", task.idle_threshold_seconds)
+
+            # 检查空闲时间是否达到阈值
+            if idle_seconds < threshold:
+                continue
+
+            # 检查任务是否应该执行
+            if not await task.should_run(self, idle_seconds):
+                continue
+
+            # 启动任务
+            logger.info("Executing idle task: {} (type: {})", task.name, task_type)
+            t = asyncio.create_task(self._execute_idle_task(task, task_type))
+            self._running_idle_tasks[task_type] = t
+            t.add_done_callback(lambda _, k=task_type: self._running_idle_tasks.pop(k, None))
+
+    async def _execute_idle_task(self, task: "IdleTask", task_type: str) -> None:
+        """执行单个空闲任务"""
+        try:
+            await task.execute(self)
+        except Exception:
+            logger.exception("Error executing idle task: {}", task_type)
+        finally:
+            self._running_idle_tasks.pop(task_type, None)
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""
@@ -539,6 +642,10 @@ class AgentLoop:
                     channel=msg.channel, chat_id=msg.chat_id,
                     content="Sorry, I encountered an error.",
                 ))
+            finally:
+                # 记录任务结束时间，用于计算空闲时长
+                import time
+                self._last_task_end_time = time.time()
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
