@@ -392,7 +392,6 @@ Then enable proxy in individual channels:
 | `custom` | Any OpenAI-compatible endpoint (direct, no LiteLLM) | — |
 | `anthropic` | LLM (Claude direct) | [console.anthropic.com](https://console.anthropic.com) |
 | `openai` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
-| `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
 | `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `minimax` | LLM (MiniMax direct) | [platform.minimaxi.com](https://platform.minimaxi.com) |
@@ -402,7 +401,6 @@ Then enable proxy in individual channels:
 | `vllm` | LLM (local, any OpenAI-compatible server) | — |
 | `mlx` | LLM (Apple Silicon local models) | — |
 | `openai_codex` | LLM (Codex, OAuth) | `superbot provider login openai-codex` |
-| `github_copilot` | LLM (GitHub Copilot, OAuth) | `superbot provider login github-copilot` |
 
 <details>
 <summary><b>OpenAI Codex (OAuth)</b></summary>

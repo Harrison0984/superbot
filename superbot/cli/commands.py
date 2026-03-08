@@ -885,23 +885,5 @@ def _login_openai_codex() -> None:
         raise typer.Exit(1)
 
 
-@_register_login("github_copilot")
-def _login_github_copilot() -> None:
-    import asyncio
-
-    console.print("[cyan]Starting GitHub Copilot device flow...[/cyan]\n")
-
-    async def _trigger():
-        from litellm import acompletion
-        await acompletion(model="github_copilot/gpt-4o", messages=[{"role": "user", "content": "hi"}], max_tokens=1)
-
-    try:
-        asyncio.run(_trigger())
-        console.print("[green]✓ Authenticated with GitHub Copilot[/green]")
-    except Exception as e:
-        console.print(f"[red]Authentication error: {e}[/red]")
-        raise typer.Exit(1)
-
-
 if __name__ == "__main__":
     app()

@@ -160,43 +160,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_oauth=True,                      # OAuth-based authentication
     ),
 
-    # Github Copilot: uses OAuth, not API key.
-    ProviderSpec(
-        name="github_copilot",
-        keywords=("github_copilot", "copilot"),
-        env_key="",                         # OAuth-based, no API key
-        display_name="Github Copilot",
-        litellm_prefix="github_copilot",   # github_copilot/model → github_copilot/model
-        skip_prefixes=("github_copilot/",),
-        env_extras=(),
-        is_gateway=False,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="",
-        default_api_base="",
-        strip_model_prefix=False,
-        model_overrides=(),
-        is_oauth=True,                      # OAuth-based authentication
-    ),
-
-    # DeepSeek: needs "deepseek/" prefix for LiteLLM routing.
-    ProviderSpec(
-        name="deepseek",
-        keywords=("deepseek",),
-        env_key="DEEPSEEK_API_KEY",
-        display_name="DeepSeek",
-        litellm_prefix="deepseek",          # deepseek-chat → deepseek/deepseek-chat
-        skip_prefixes=("deepseek/",),       # avoid double-prefix
-        env_extras=(),
-        is_gateway=False,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="",
-        default_api_base="",
-        strip_model_prefix=False,
-        model_overrides=(),
-    ),
-
     # Gemini: needs "gemini/" prefix for LiteLLM.
     ProviderSpec(
         name="gemini",
