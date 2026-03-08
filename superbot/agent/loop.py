@@ -862,8 +862,10 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
+        # Use memory_provider if available, fallback to main provider
+        provider = self.memory_provider or self.provider
         return await MemoryStore(self.workspace).consolidate(
-            session, self.provider, self.model,
+            session, provider, provider.get_default_model(),
             archive_all=archive_all, memory_window=self.memory_window,
         )
 
