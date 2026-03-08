@@ -6,7 +6,7 @@ echo "superbot core agent line count"
 echo "================================"
 echo ""
 
-for dir in agent agent/tools bus config cron heartbeat session utils; do
+for dir in agent agent/tools bus config cron session utils; do
   count=$(find "superbot/$dir" -maxdepth 1 -name "*.py" -exec cat {} + | wc -l)
   printf "  %-16s %5s lines\n" "$dir/" "$count"
 done

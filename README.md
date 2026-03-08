@@ -38,7 +38,7 @@ User Message (Telegram/WhatsApp/Feishu/Email/QQ)
 | **Agent** | Core reasoning loop with context, memory, and tool execution |
 | **LLM Providers** | OpenAI, Anthropic, MiniMax, MLX (Apple Silicon local), etc. |
 | **Tools** | Shell, filesystem, web search, MCP servers |
-| **Scheduled Tasks** | Cron-based job scheduling + heartbeat service |
+| **Scheduled Tasks** | Cron-based job scheduling |
 
 ## 📦 Install
 
@@ -660,26 +660,6 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
-<details>
-<summary><b>Heartbeat (Periodic Tasks)</b></summary>
-
-The gateway wakes up every 30 minutes and checks `HEARTBEAT.md` in your workspace (`~/.superbot/workspace/HEARTBEAT.md`). If the file has tasks, the agent executes them and delivers results to your most recently active chat channel.
-
-**Setup:** edit `~/.superbot/workspace/HEARTBEAT.md` (created automatically by `superbot onboard`):
-
-```markdown
-## Periodic Tasks
-
-- [ ] Check weather forecast and send a summary
-- [ ] Scan inbox for urgent emails
-```
-
-The agent can also manage this file itself — ask it to "add a periodic task" and it will update `HEARTBEAT.md` for you.
-
-> **Note:** The gateway must be running (`superbot gateway`) and you must have chatted with the bot at least once so it knows which channel to deliver to.
-
-</details>
-
 ## 🐳 Docker
 
 > [!TIP]
@@ -734,7 +714,6 @@ superbot/
 ├── channels/       # 📱 Chat channel integrations
 ├── bus/            # 🚌 Message routing
 ├── cron/           # ⏰ Scheduled tasks
-├── heartbeat/      # 💓 Proactive wake-up
 ├── providers/      # 🤖 LLM providers
 ├── session/        # 💬 Conversation sessions
 ├── config/         # ⚙️ Configuration
