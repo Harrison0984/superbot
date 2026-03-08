@@ -31,12 +31,14 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, memory_system: Any = None):
         self.workspace = workspace
-        self.memory = MemoryStore(workspace)
+        # Use vector-based memory system if available, otherwise fallback to file-based
+        self.memory_system = memory_system
+        self.memory = MemoryStore(workspace)  # Fallback for file-based memory
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None, channel: str | None = None) -> str:
+    def build_system_prompt(self, skill_names: list[str] | None = None, channel: str | None = None, query: str = "") -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         if channel == "email":
             from loguru import logger
@@ -47,7 +49,11 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        memory = self.memory.get_memory_context()
+        # Use vector-based memory system if available
+        if self.memory_system is not None:
+            memory = self.memory_system.get_memory_context(query=query)
+        else:
+            memory = self.memory.get_memory_context()
         if memory:
             parts.append(f"# Memory\n\n{memory}")
 
@@ -155,7 +161,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, query=current_message)},
             *history,
             {"role": "user", "content": merged},
         ]

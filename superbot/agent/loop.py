@@ -73,11 +73,13 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
         memory_provider: LLMProvider | None = None,
+        memory_system: Any = None,
     ):
         from superbot.config.schema import ExecToolConfig, ProxyConfig, WebToolsConfig
         self.bus = bus
         self.channels_config = channels_config
         self.memory_provider = memory_provider
+        self.memory_system = memory_system
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
@@ -93,7 +95,7 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, memory_system=memory_system)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -806,6 +808,17 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
+        # Store to vector memory in real-time if enabled
+        if self.memory_system is not None:
+            try:
+                # Store user message
+                self.memory_system.remember(f"[USER] {msg.content}")
+                # Store assistant response
+                if final_content:
+                    self.memory_system.remember(f"[ASSISTANT] {final_content}")
+            except Exception as e:
+                logger.error("Error storing to real-time memory: {}", e)
+
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
 
@@ -861,8 +874,40 @@ class AgentLoop:
         session.updated_at = datetime.now()
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
-        """Delegate to MemoryStore.consolidate(). Returns True on success."""
-        # Use memory_provider if available, fallback to main provider
+        """Store messages to vector-based memory system in real-time.
+
+        If memory_system is available, use real-time memory storage instead of batch consolidation.
+        """
+        # Use vector-based memory system if available
+        if self.memory_system is not None:
+            try:
+                # Store recent messages to vector memory
+                start_idx = session.last_consolidated if not archive_all else 0
+                messages_to_store = session.messages[start_idx:]
+
+                for msg in messages_to_store:
+                    content = msg.get("content", "")
+                    role = msg.get("role", "")
+                    # Only store user and assistant messages (not tool results)
+                    if role in ("user", "assistant") and content:
+                        # Extract meaningful content for memory
+                        memory_text = f"[{role.upper()}] {content}"
+                        self.memory_system.remember(memory_text)
+
+                # Update consolidation index
+                if archive_all:
+                    session.messages = []
+                    session.last_consolidated = 0
+                else:
+                    keep_count = self.memory_window // 2
+                    session.last_consolidated = len(session.messages) - keep_count
+
+                return True
+            except Exception as e:
+                logger.error("Error storing to vector memory: {}", e)
+                return False
+
+        # Fallback to old file-based consolidation
         provider = self.memory_provider or self.provider
         return await MemoryStore(self.workspace).consolidate(
             session, provider, provider.get_default_model(),

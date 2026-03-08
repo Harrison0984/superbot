@@ -345,6 +345,31 @@ def gateway(
     main_provider, memory_provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
 
+    # Initialize vector-based memory system if enabled
+    memory_system = None
+    if config.embedding.enabled:
+        try:
+            from superbot.agent.memory_providers import (
+                create_embedding_provider,
+                create_llm_adapter,
+            )
+            from superbot.agent.memory_adapter import create_memory_adapter
+
+            embedding_provider = create_embedding_provider(config.embedding)
+            llm_adapter = create_llm_adapter(main_provider, config.agents.defaults.model, config.embedding)
+
+            memory_system = create_memory_adapter(
+                workspace=config.workspace_path,
+                embedding_provider=embedding_provider,
+                llm_provider=llm_adapter,
+            )
+            if memory_system:
+                console.print("[green]✓[/green] Vector memory system enabled")
+            else:
+                console.print("[yellow]Warning: Failed to initialize vector memory system[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Vector memory not available: {e}[/yellow]")
+
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
@@ -354,6 +379,7 @@ def gateway(
         bus=bus,
         provider=main_provider,
         memory_provider=memory_provider,
+        memory_system=memory_system,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,
@@ -475,6 +501,31 @@ def agent(
     bus = MessageBus()
     main_provider, memory_provider = _make_provider(config)
 
+    # Initialize vector-based memory system if enabled
+    memory_system = None
+    if config.embedding.enabled:
+        try:
+            from superbot.agent.memory_providers import (
+                create_embedding_provider,
+                create_llm_adapter,
+            )
+            from superbot.agent.memory_adapter import create_memory_adapter
+
+            embedding_provider = create_embedding_provider(config.embedding)
+            llm_adapter = create_llm_adapter(main_provider, config.agents.defaults.model, config.embedding)
+
+            memory_system = create_memory_adapter(
+                workspace=config.workspace_path,
+                embedding_provider=embedding_provider,
+                llm_provider=llm_adapter,
+            )
+            if memory_system:
+                console.print("[green]✓[/green] Vector memory system enabled")
+            else:
+                console.print("[yellow]Warning: Failed to initialize vector memory system[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Vector memory not available: {e}[/yellow]")
+
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
@@ -488,6 +539,7 @@ def agent(
         bus=bus,
         provider=main_provider,
         memory_provider=memory_provider,
+        memory_system=memory_system,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,

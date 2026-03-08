@@ -211,6 +211,26 @@ class LocalModelConfig(Base):
     path: str = ""  # Path to local model (full path required)
 
 
+class EmbeddingConfig(Base):
+    """Embedding model configuration for vector-based memory."""
+
+    enabled: bool = False
+    model_path: str = "/Users/heyunpeng/workstation/src/MiniLM-L6-v2"  # Local sentence-transformers model
+
+    # LLM parameters for memory processing
+    llm_max_tokens: int = 262144
+    llm_temperature: float = 0.7
+    triple_max_tokens: int = 512
+    triple_temperature: float = 0.3
+    compress_max_tokens: int = 128
+    compress_temperature: float = 0.3
+    context_max_tokens: int = 128
+    context_temperature: float = 0.3
+
+    # Token estimation (characters per token, ~4 for Chinese/English mix)
+    chars_per_token: int = 4
+
+
 class ProxyConfig(Base):
     """Global proxy configuration."""
 
@@ -227,6 +247,7 @@ class Config(BaseSettings):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     local_model: LocalModelConfig = Field(default_factory=LocalModelConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
