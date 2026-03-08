@@ -72,10 +72,12 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        memory_provider: LLMProvider | None = None,
     ):
         from superbot.config.schema import ExecToolConfig, ProxyConfig, WebToolsConfig
         self.bus = bus
         self.channels_config = channels_config
+        self.memory_provider = memory_provider
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()

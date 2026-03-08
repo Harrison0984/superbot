@@ -25,3 +25,25 @@ def test_make_provider_with_local_model_disabled():
     main_provider, memory_provider = _make_provider(config)
     assert main_provider is not None, "main_provider should not be None"
     assert memory_provider is None, "memory_provider should be None when local_model disabled"
+
+
+def test_agent_loop_accepts_memory_provider():
+    """Test that AgentLoop accepts memory_provider parameter."""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from superbot.agent.loop import AgentLoop
+    from superbot.bus.queue import MessageBus
+
+    mock_provider = MagicMock()
+    mock_memory_provider = MagicMock()
+    mock_bus = MagicMock(spec=MessageBus)
+
+    loop = AgentLoop(
+        bus=mock_bus,
+        provider=mock_provider,
+        memory_provider=mock_memory_provider,
+        workspace=Path("/tmp/test"),
+    )
+
+    assert loop.memory_provider == mock_memory_provider
+    assert loop.provider == mock_provider
