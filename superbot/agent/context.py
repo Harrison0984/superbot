@@ -10,7 +10,6 @@ from typing import Any
 
 from loguru import logger
 
-from superbot.agent.memory import MemoryStore
 from superbot.agent.skills import SkillsLoader
 
 # Text file extensions that can be read as plain text
@@ -33,9 +32,7 @@ class ContextBuilder:
 
     def __init__(self, workspace: Path, memory_system: Any = None):
         self.workspace = workspace
-        # Use vector-based memory system if available, otherwise fallback to file-based
         self.memory_system = memory_system
-        self.memory = MemoryStore(workspace)  # Fallback for file-based memory
         self.skills = SkillsLoader(workspace)
 
     def build_system_prompt(self, skill_names: list[str] | None = None, channel: str | None = None, query: str = "") -> str:
@@ -49,13 +46,11 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        # Use vector-based memory system if available
+        # Use vector-based memory system
         if self.memory_system is not None:
             memory = self.memory_system.get_memory_context(query=query)
-        else:
-            memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+            if memory:
+                parts.append(f"# Memory\n\n{memory}")
 
         always_skills = self.skills.get_always_skills()
         if always_skills:

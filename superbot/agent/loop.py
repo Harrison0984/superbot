@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from loguru import logger
 
 from superbot.agent.context import ContextBuilder
-from superbot.agent.memory import MemoryStore
 from superbot.agent.subagent import SubagentManager
 from superbot.agent.tools.cron import CronTool
 from superbot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -907,12 +906,9 @@ class AgentLoop:
                 logger.error("Error storing to vector memory: {}", e)
                 return False
 
-        # Fallback to old file-based consolidation
-        provider = self.memory_provider or self.provider
-        return await MemoryStore(self.workspace).consolidate(
-            session, provider, provider.get_default_model(),
-            archive_all=archive_all, memory_window=self.memory_window,
-        )
+        # No fallback - vector memory is required
+        logger.warning("Vector memory system not available")
+        return False
 
     async def process_direct(
         self,
