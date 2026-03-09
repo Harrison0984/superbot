@@ -121,7 +121,6 @@ class AgentDefaults(Base):
     max_tokens: int = 8192
     temperature: float = 0.1
     max_tool_iterations: int = 40
-    memory_window: int = 100
     reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
 
 
@@ -216,6 +215,10 @@ class EmbeddingConfig(Base):
 
     enabled: bool = False
     model_path: str = "/Users/heyunpeng/workstation/src/MiniLM-L6-v2"  # Local sentence-transformers model
+
+    # Session cleanup threshold - when to clean old messages from session
+    # (vector memory handles all storage, this is just for memory management)
+    session_cleanup_threshold: int = 10
 
     # LLM parameters for memory processing
     llm_max_tokens: int = 262144

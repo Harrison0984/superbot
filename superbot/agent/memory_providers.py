@@ -88,6 +88,11 @@ def shutdown_executor():
         _executor = None
 
 
+# Cleanup executor on application exit
+import atexit
+atexit.register(shutdown_executor)
+
+
 class SuperbotEmbeddingAdapter:
     """Adapter for superbot's embedding functionality using sentence-transformers.
 

@@ -8,4 +8,4 @@ Before scheduling reminders, check available skills and follow skill guidance fi
 Use the built-in `cron` tool to create/list/remove jobs (do not call `superbot cron` via `exec`).
 Get USER_ID and CHANNEL from the current session (e.g., `8281248569` and `telegram` from `telegram:8281248569`).
 
-**Do NOT just write reminders to MEMORY.md** — that won't trigger actual notifications.
+**Use the cron tool directly** — don't try to schedule reminders via file writes.

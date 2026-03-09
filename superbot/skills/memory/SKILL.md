@@ -1,31 +1,32 @@
 ---
 name: memory
-description: Two-layer memory system with grep-based recall.
+description: Vector-based memory system with semantic recall.
 always: true
 ---
 
 # Memory
 
-## Structure
+## How It Works
 
-- `memory/MEMORY.md` — Long-term facts (preferences, project context, relationships). Always loaded into your context.
-- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep. Each entry starts with [YYYY-MM-DD HH:MM].
+superbot uses a vector-based memory system that automatically stores and retrieves relevant context:
 
-## Search Past Events
+- **Automatic Storage**: Conversations are stored in real-time to vector database
+- **Semantic Retrieval**: Relevant memories are retrieved based on meaning, not just keywords
+- **No Manual Management**: The system handles storage and retrieval automatically
 
-```bash
-grep -i "keyword" memory/HISTORY.md
-```
+## Context Provided
 
-Use the `exec` tool to run grep. Combine patterns: `grep -iE "meeting|deadline" memory/HISTORY.md`
+When you respond to user messages, the system automatically retrieves:
+- **Relevant Facts**: Key facts from past conversations
+- **Conversation Context**: Recent related dialogue
+- **Context Understanding**: LLM-powered understanding of user intent
 
-## When to Update MEMORY.md
+## Best Practices
 
-Write important facts immediately using `edit_file` or `write_file`:
-- User preferences ("I prefer dark mode")
-- Project context ("The API uses OAuth2")
-- Relationships ("Alice is the project lead")
+1. **Don't write to files** for memory - the system handles this automatically
+2. **Focus on the conversation** - relevant context will be provided
+3. **Important facts** will be extracted and stored automatically
 
-## Auto-consolidation
+## No Action Required
 
-Old conversations are automatically summarized and appended to HISTORY.md when the session grows large. Long-term facts are extracted to MEMORY.md. You don't need to manage this.
+You don't need to manage memory manually. Just focus on helping the user - the memory system works in the background.

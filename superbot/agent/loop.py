@@ -60,7 +60,6 @@ class AgentLoop:
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
-        memory_window: int = 100,
         reasoning_effort: str | None = None,
         brave_api_key: str | None = None,
         web_config: "WebToolsConfig | None" = None,
@@ -73,8 +72,12 @@ class AgentLoop:
         channels_config: ChannelsConfig | None = None,
         memory_provider: LLMProvider | None = None,
         memory_system: Any = None,
+        embedding_config: Any = None,
     ):
         from superbot.config.schema import ExecToolConfig, ProxyConfig, WebToolsConfig
+        # Vector memory system handles all context retrieval, no sliding window needed
+        # Session cleanup threshold from embedding config
+        self._session_cleanup_threshold = embedding_config.session_cleanup_threshold if embedding_config else 10
         self.bus = bus
         self.channels_config = channels_config
         self.memory_provider = memory_provider
@@ -85,7 +88,6 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.memory_window = memory_window
         self.reasoning_effort = reasoning_effort
         self.brave_api_key = brave_api_key
         self.web_config = web_config
@@ -303,11 +305,7 @@ class AgentLoop:
         on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict], list[str]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages, user_media)."""
-        # Limit messages to prevent token overflow
-        max_history = self.memory_window
-        if len(initial_messages) > max_history:
-            initial_messages = initial_messages[-max_history:]
-
+        # All context comes from vector memory system via system prompt
         messages = initial_messages
         iteration = 0
         final_content = None
@@ -589,10 +587,9 @@ class AgentLoop:
                 content=f"[{event.tool_name}]: {event.content}"
             )
 
-            # 获取历史并构建消息
-            history = session.get_history(max_messages=self.memory_window)
+            # 向量记忆系统提供所有上下文，不需要session历史
             messages = self.context.build_messages(
-                history=history,
+                history=[],
                 current_message=f"工具 {event.tool_name} 已完成: {event.content}",
                 channel=channel,
                 chat_id=chat_id,
@@ -604,7 +601,7 @@ class AgentLoop:
             # 运行 agent 获取回复
             final_content, _, all_msgs, _ = await self._run_agent_loop(messages, event.session_key)
 
-            # 保存到会话
+            # 保存新消息（跳过已存在的历史消息）
             self._save_turn(session, all_msgs, len(history))
             self.sessions.save(session)
 
@@ -677,13 +674,14 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
-            history = session.get_history(max_messages=self.memory_window)
+            # 获取最近3条消息作为滑动窗口，向量记忆处理更早的内容
+            # 向量记忆系统提供所有上下文，不需要session历史
             messages = self.context.build_messages(
-                history=history,
+                history=[],
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
             final_content, _, all_msgs, _ = await self._run_agent_loop(messages, key)
-            self._save_turn(session, all_msgs, 1 + len(history))
+            self._save_turn(session, all_msgs, 0)
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
@@ -762,7 +760,9 @@ class AgentLoop:
                                   content="🐈 superbot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
         unconsolidated = len(session.messages) - session.last_consolidated
-        if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
+        # Vector memory stores in real-time, no consolidation needed
+        # Keep a small threshold just to clean up old messages from session
+        if (unconsolidated >= self._session_cleanup_threshold and session.key not in self._consolidating):
             self._consolidating.add(session.key)
             lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
 
@@ -784,9 +784,9 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        history = session.get_history(max_messages=self.memory_window)
+        # 向量记忆系统提供所有上下文，不需要session历史
         initial_messages = self.context.build_messages(
-            history=history,
+            history=[],
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
@@ -818,7 +818,8 @@ class AgentLoop:
             except Exception as e:
                 logger.error("Error storing to real-time memory: {}", e)
 
-        self._save_turn(session, all_msgs, 1 + len(history))
+        # 保存消息到session（不再跳过，由向量记忆处理历史）
+        self._save_turn(session, all_msgs, 0)
         self.sessions.save(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
@@ -893,13 +894,13 @@ class AgentLoop:
                         memory_text = f"[{role.upper()}] {content}"
                         self.memory_system.remember(memory_text)
 
-                # Update consolidation index
+                # Update consolidation index - keep minimal messages since vector memory handles storage
                 if archive_all:
                     session.messages = []
                     session.last_consolidated = 0
                 else:
-                    keep_count = self.memory_window // 2
-                    session.last_consolidated = len(session.messages) - keep_count
+                    keep_count = 0  # Vector memory handles all, no need to keep in session
+                    session.last_consolidated = len(session.messages)
 
                 return True
             except Exception as e:

@@ -39,7 +39,7 @@ class MemoryConsolidationIdleTask(IdleTask):
             if key:
                 session = agent.sessions.get_or_create(key)
                 unconsolidated = len(session.messages) - session.last_consolidated
-                if unconsolidated >= agent.memory_window:
+                if unconsolidated >= 10:
                     return True
         return False
 
@@ -50,6 +50,6 @@ class MemoryConsolidationIdleTask(IdleTask):
                 continue
             session = agent.sessions.get_or_create(key)
             unconsolidated = len(session.messages) - session.last_consolidated
-            if unconsolidated >= agent.memory_window:
+            if unconsolidated >= agent._recent_messages_window:
                 logger.info("Running consolidation for session {}", session.key)
                 await agent._consolidate_memory(session)
