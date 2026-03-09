@@ -162,25 +162,30 @@ class MemorySystem:
 
         batch_text = [item["text"] for item in batch_items]
 
-        # 调用 LLM 提纯
+        # 调用 LLM 提纯（仅处理有意义的文本，忽略过短的消息）
         llm = self._get_llm()
         extracted = []
         for text in batch_text:
-            if llm is not None:
-                triples = llm.extract_triples(text)
-                if isinstance(triples, list):
-                    entities = [{"value": t.get("subject", ""), "type": "subject"}
-                               for t in triples if t.get("subject")]
-                    entities += [{"value": t.get("object", ""), "type": "object"}
-                               for t in triples if t.get("object")]
-                    extracted.append({
-                        "tag": "三元组",
-                        "summary": text,  # 使用原始文本作为 summary
-                        "entities": entities,
-                        "facts": [t.get("subject", "") + "-" + t.get("relation", "") + "-" + t.get("object", "")
-                                 for t in triples if t.get("subject") and t.get("relation") and t.get("object")]
-                    })
-                else:
+            # Skip triple extraction for very short messages
+            if llm is not None and len(text) > 50:
+                try:
+                    triples = llm.extract_triples(text)
+                    if isinstance(triples, list) and triples:
+                        entities = [{"value": t.get("subject", ""), "type": "subject"}
+                                   for t in triples if t.get("subject")]
+                        entities += [{"value": t.get("object", ""), "type": "object"}
+                                   for t in triples if t.get("object")]
+                        extracted.append({
+                            "tag": "三元组",
+                            "summary": text,  # 使用原始文本作为 summary
+                            "entities": entities,
+                            "facts": [t.get("subject", "") + "-" + t.get("relation", "") + "-" + t.get("object", "")
+                                     for t in triples if t.get("subject") and t.get("relation") and t.get("object")]
+                        })
+                    else:
+                        extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
+                except Exception as e:
+                    # Skip triple extraction on error
                     extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
             else:
                 extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
