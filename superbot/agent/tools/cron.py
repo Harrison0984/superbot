@@ -72,15 +72,20 @@ class CronTool(Tool):
 
     async def execute(
         self,
-        action: str,
-        message: str = "",
-        every_seconds: int | None = None,
-        cron_expr: str | None = None,
-        tz: str | None = None,
-        at: str | None = None,
-        job_id: str | None = None,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
         **kwargs: Any,
     ) -> str:
+        action = kwargs.get("action", "")
+        message = kwargs.get("message", "")
+        every_seconds = kwargs.get("every_seconds")
+        cron_expr = kwargs.get("cron_expr")
+        tz = kwargs.get("tz")
+        at = kwargs.get("at")
+        job_id = kwargs.get("job_id")
+
         if action == "add":
             if self._in_cron_context.get():
                 return tool_error("forbidden", "Cannot schedule new jobs from within a cron job execution")

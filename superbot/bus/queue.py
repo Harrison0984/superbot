@@ -2,7 +2,7 @@
 
 import asyncio
 
-from superbot.bus.events import InboundMessage, OutboundMessage, ToolEvent
+from superbot.bus.events import InboundMessage, OutboundMessage
 
 
 class MessageBus:
@@ -16,7 +16,6 @@ class MessageBus:
     def __init__(self):
         self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
-        self.tool_events: asyncio.Queue[ToolEvent] = asyncio.Queue()  # 新增
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         """Publish a message from a channel to the agent."""

@@ -1,13 +1,19 @@
-"""Email channel implementation using IMAP polling + SMTP replies."""
+"""Email tool - both as tool for sending and as IMAP poller for receiving.
+
+This class combines:
+- Tool capability: Send emails via SMTP
+- Background polling: Receive emails via IMAP
+"""
 
 import asyncio
 import html
 import imaplib
+import json
 import re
-import socket
-import time
 import smtplib
+import socket
 import ssl
+import time
 from datetime import date
 from email import policy
 from email.header import decode_header, make_header
@@ -19,244 +25,191 @@ from typing import Any
 
 from loguru import logger
 
-from superbot.bus.events import OutboundMessage
+from superbot.agent.tools.base import Tool, tool_error
+from superbot.bus.events import InboundMessage, OutboundMessage
 from superbot.bus.queue import MessageBus
-from superbot.config.schema import ProxyConfig
-from superbot.channels.base import BaseChannel
-from superbot.config.schema import EmailConfig
+from superbot.config.schema import EmailConfig, ProxyConfig
 
 
-class EmailChannel(BaseChannel):
-    """
-    Email channel.
+class EmailTool(Tool):
+    """Email tool - both for sending and receiving emails.
 
-    Inbound:
-    - Poll IMAP mailbox for unread messages.
-    - Convert each message into an inbound event.
+    As Tool:
+    - send(to, subject, content): Send email via SMTP
 
-    Outbound:
-    - Send responses via SMTP back to the sender address.
-
-    Note: consent_granted config was removed - email access is now controlled
-    by enabling/disabling the channel directly in config (channels.email.enabled).
+    As Poller:
+    - start_polling(bus): Start IMAP polling for inbound emails
+    - stop_polling(): Stop IMAP polling
     """
 
-    name = "email"
     _IMAP_MONTHS = (
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     )
 
     def __init__(
         self,
-        config: EmailConfig,
-        bus: MessageBus,
+        config: EmailConfig | None = None,
         proxy_config: ProxyConfig | None = None,
-        channels: dict | None = None,
     ):
-        super().__init__(config, bus)
-        self.config: EmailConfig = config
+        self.config = config
         self.proxy_config = proxy_config or ProxyConfig()
-        self.channels = channels or {}  # Reference to all channels for notification
-        self._last_subject_by_chat: dict[str, str] = {}
-        self._last_message_id_by_chat: dict[str, str] = {}
-        self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
-        self._MAX_PROCESSED_UIDS = 100000
-
-    async def start(self) -> None:
-        """Start polling IMAP for inbound emails."""
-        if not self._validate_config():
-            return
-
-        self._running = True
-        logger.info("Starting Email channel (IMAP polling mode)...")
-
-        poll_seconds = max(5, int(self.config.poll_interval_seconds))
-        max_retries = 2
-        while self._running:
-            inbound_items = []
-            last_error = None
-            for attempt in range(max_retries + 1):
-                try:
-                    inbound_items = await asyncio.to_thread(self._fetch_new_messages)
-                    last_error = None
-                    break
-                except Exception as e:
-                    last_error = e
-                    if attempt < max_retries:
-                        logger.warning("Email polling attempt {} failed: {}, retrying...", attempt + 1, e)
-                    else:
-                        logger.error("Email polling failed after {} attempts: {}", max_retries + 1, e)
-
-            if last_error and not inbound_items:
-                # All retries failed, wait and continue
-                await asyncio.sleep(poll_seconds)
-                continue
-
-            for item in inbound_items:
-                sender = item["sender"]
-                subject = item.get("subject", "")
-                message_id = item.get("message_id", "")
-
-                if subject:
-                    self._last_subject_by_chat[sender] = subject
-                if message_id:
-                    self._last_message_id_by_chat[sender] = message_id
-
-                await self._handle_message(
-                    sender_id=sender,
-                    chat_id=sender,
-                    content=item["content"],
-                    media=item.get("media", []),
-                    metadata=item.get("metadata", {}),
-                )
-
-            await asyncio.sleep(poll_seconds)
-
-    async def stop(self) -> None:
-        """Stop polling loop."""
+        self._bus: MessageBus | None = None
         self._running = False
 
-    async def send(self, msg: OutboundMessage) -> None:
-        """Send email or route to other channels."""
+        # IMAP state
+        self._last_subject_by_chat: dict[str, str] = {}
+        self._last_message_id_by_chat: dict[str, str] = {}
+        self._processed_uids: set[str] = set()
+        self._MAX_PROCESSED_UIDS = 100000
 
-        # If msg.channel != "email", user is replying from another channel → send email
-        # If msg.channel == "email", this is a response to inbound email → route to other channel
+        # Attachment settings
+        self.MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+        self.BLOCKED_EXTENSIONS = {
+            ".exe", ".scr", ".bat", ".cmd", ".com", ".pif", ".msi",
+            ".dll", ".vbs", ".js", ".jar", ".sh", ".ps1", ".deb", ".rpm"
+        }
 
-        if msg.channel != "email":
-            # User is sending an email (reply from Feishu/Telegram/etc.)
-            logger.info("Sending email to {}", msg.chat_id)
-        else:
-            # Response to inbound email → route to other channel for notification
-            notification_channel = self._get_notification_channel()
-            if notification_channel and notification_channel != "email":
-                logger.info("Routing email response to channel: {}", notification_channel)
-                other_channel = self.channels.get(notification_channel)
-                if other_channel:
-                    # Get user_id from target channel config, fallback to metadata
-                    target_user_id = None
-                    other_channel_cfg = getattr(other_channel, "config", None)
-                    if other_channel_cfg and hasattr(other_channel_cfg, "user_id"):
-                        target_user_id = getattr(other_channel_cfg, "user_id", None)
-                    notify_chat_id = msg.metadata.get("notify_chat_id") or target_user_id or "default"
+    # ==================== Tool interface ====================
 
-                    notify_msg = OutboundMessage(
-                        channel=notification_channel,
-                        chat_id=notify_chat_id,
-                        content=msg.content,
-                        metadata=msg.metadata,
-                    )
-                    try:
-                        await other_channel.send(notify_msg)
-                        logger.info("Notification sent via {}", notification_channel)
-                        return
-                    except Exception as e:
-                        logger.error("Failed to send via {}: {}", notification_channel, e)
-            # If no notification channel, skip (don't send email reply)
-            return
+    @property
+    def name(self) -> str:
+        return "email"
 
-        # Send email
+    @property
+    def description(self) -> str:
+        return "Send an email to a recipient. Use this to send emails via SMTP."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Email body content"
+                },
+                "in_reply_to": {
+                    "type": "string",
+                    "description": "Message-ID of the email being replied to (for threading)"
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional: list of file paths to attach to the email"
+                }
+            },
+            "required": ["to", "content"]
+        }
+
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
+        """Send an email via SMTP."""
+        to = kwargs.get("to", "")
+        subject = kwargs.get("subject", "superbot reply")
+        in_reply_to = kwargs.get("in_reply_to")
+        attachments = kwargs.get("attachments")
+
+        if not self.config:
+            return tool_error("not_configured", "Email tool not configured")
+
+        # Validate config
         if not self.config.smtp_host:
-            logger.warning("Email channel SMTP host not configured")
-            return
+            return tool_error("not_configured", "SMTP host not configured")
+        if not self.config.smtp_username:
+            return tool_error("not_configured", "SMTP username not configured")
+        if not self.config.smtp_password:
+            return tool_error("not_configured", "SMTP password not configured")
 
-        to_addr = msg.chat_id.strip()
+        to_addr = to.strip()
         if not to_addr:
-            logger.warning("Email channel missing recipient address")
-            return
+            return tool_error("invalid_params", "No recipient address specified")
 
-        base_subject = self._last_subject_by_chat.get(to_addr, "superbot reply")
-        subject = self._reply_subject(base_subject)
-        if msg.metadata and isinstance(msg.metadata.get("subject"), str):
-            override = msg.metadata["subject"].strip()
-            if override:
-                subject = override
+        # Get subject from last email if replying
+        base_subject = self._last_subject_by_chat.get(to_addr, subject)
+        if not subject or subject == "superbot reply":
+            subject = self._reply_subject(base_subject)
 
+        # Build email
         email_msg = EmailMessage()
-        email_msg["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
+        email_msg["From"] = self.config.from_address or self.config.smtp_username
         email_msg["To"] = to_addr
         email_msg["Subject"] = subject
-        email_msg.set_content(msg.content or "")
+        email_msg.set_content(content or "")
 
-        in_reply_to = self._last_message_id_by_chat.get(to_addr)
-        if in_reply_to:
-            email_msg["In-Reply-To"] = in_reply_to
-            email_msg["References"] = in_reply_to
+        # Handle threading
+        reply_to = in_reply_to or self._last_message_id_by_chat.get(to_addr)
+        if reply_to:
+            email_msg["In-Reply-To"] = reply_to
+            email_msg["References"] = reply_to
 
+        # Add attachments
+        attachment_files = attachments or []
+        for file_path in attachment_files:
+            try:
+                self._add_attachment(email_msg, file_path)
+            except Exception as e:
+                logger.warning("Failed to add attachment {}: {}", file_path, e)
+
+        # Send via SMTP
         try:
             await asyncio.to_thread(self._smtp_send, email_msg)
         except Exception as e:
-            logger.error("Error sending email to {}: {}", to_addr, e)
-            raise
+            return tool_error("send_error", f"Failed to send email: {str(e)}")
 
-    def _validate_config(self) -> bool:
-        missing = []
-        if not self.config.imap_host:
-            missing.append("imap_host")
-        if not self.config.imap_username:
-            missing.append("imap_username")
-        if not self.config.imap_password:
-            missing.append("imap_password")
-        if not self.config.smtp_host:
-            missing.append("smtp_host")
-        if not self.config.smtp_username:
-            missing.append("smtp_username")
-        if not self.config.smtp_password:
-            missing.append("smtp_password")
+        return json.dumps({
+            "content": f"Email sent to {to_addr} with {len(attachment_files)} attachment(s)",
+            "media": []
+        })
 
-        if missing:
-            logger.error("Email channel not configured, missing: {}", ', '.join(missing))
-            return False
-        return True
+    def initialize(self, bus: "MessageBus") -> None:
+        """Initialize the tool with message bus and auto-start polling."""
+        self._bus = bus
+        # Auto-start IMAP polling if configured
+        self.start_polling(bus)
 
     def _smtp_send(self, msg: EmailMessage) -> None:
-        timeout = 120
-
-        # Check if proxy is enabled
+        """Send email via SMTP."""
+        timeout = 180
         use_proxy = self.config.use_proxy and self.proxy_config.enabled
         proxy_url = None
 
         if use_proxy:
             proxy_url = self.proxy_config.socks_proxy or self.proxy_config.https_proxy or self.proxy_config.http_proxy
-            if proxy_url:
-                logger.info("Using proxy for SMTP: {}", proxy_url)
 
         if use_proxy and proxy_url and proxy_url.startswith("socks"):
-            # Use SOCKS proxy for SMTP - set default proxy and patch socket
             try:
                 import socks
-                import re
-                # Parse proxy host and port
                 match = re.search(r"socks[45]?://([^:]+):(\d+)", proxy_url)
                 if match:
                     proxy_host = match.group(1)
                     proxy_port = int(match.group(2))
                     proxy_type = socks.SOCKS5 if "5" in proxy_url else socks.SOCKS4
-                    # Set default proxy for this thread
                     socks.set_default_proxy(proxy_type, proxy_host, proxy_port)
-                    # Patch socket to use proxy
                     original_socket = socket.socket
                     socket.socket = socks.socksocket
                     try:
                         smtp = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
                     finally:
-                        # Restore original socket
                         socket.socket = original_socket
                         socks.set_default_proxy()
                 else:
                     smtp = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
             except ImportError:
-                logger.warning("PySocks not installed, connecting without proxy")
                 smtp = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
             try:
                 if self.config.smtp_use_tls:
@@ -285,6 +238,195 @@ class EmailChannel(BaseChannel):
             smtp.login(self.config.smtp_username, self.config.smtp_password)
             smtp.send_message(msg)
 
+    def _reply_subject(self, base_subject: str) -> str:
+        subject = (base_subject or "").strip() or "superbot reply"
+        prefix = self.config.subject_prefix or "Re: "
+        if subject.lower().startswith("re:"):
+            return subject
+        return f"{prefix}{subject}"
+
+    def _add_attachment(self, msg: EmailMessage, file_path: str) -> None:
+        """Add an attachment to the email message."""
+        from pathlib import Path
+
+        path = Path(file_path)
+        if not path.exists():
+            logger.warning("Attachment file not found: {}", file_path)
+            return
+
+        filename = path.name
+        ext = path.suffix.lower()
+
+        # Check blocked extensions
+        if ext in self.BLOCKED_EXTENSIONS:
+            logger.warning("Blocked dangerous attachment: {}", filename)
+            return
+
+        # Check file size
+        file_size = path.stat().st_size
+        if file_size > self.MAX_ATTACHMENT_SIZE:
+            logger.warning("Attachment too large ({} bytes): {}", file_size, filename)
+            return
+
+        # Read the file
+        data = path.read_bytes()
+
+        # Determine MIME type
+        mime_type = self._get_mime_type(ext)
+        maintype, subtype = mime_type.split("/", 1) if "/" in mime_type else ("application", "octet-stream")
+
+        # Build attachment manually using MIMEBase
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        part = MIMEBase(maintype, subtype)
+        part.set_payload(data)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+
+        # If original message is not multipart, convert it
+        if not msg.is_multipart():
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+
+            # Get original content
+            body = msg.get_body()
+            original_content = ""
+            if body:
+                original_content = body.get_content()
+
+            # Create new multipart message
+            new_msg = MIMEMultipart('mixed')
+            new_msg['From'] = msg['From']
+            new_msg['To'] = msg['To']
+            new_msg['Subject'] = msg['Subject']
+            if msg.get('In-Reply-To'):
+                new_msg['In-Reply-To'] = msg['In-Reply-To']
+            if msg.get('References'):
+                new_msg['References'] = msg['References']
+
+            # Add original content as text part
+            if original_content:
+                text_part = MIMEText(original_content, 'plain', 'utf-8')
+                new_msg.attach(text_part)
+
+            # Attach the file
+            new_msg.attach(part)
+
+            # Copy back to original message
+            msg._payload = new_msg._payload
+            msg._headers = new_msg._headers
+        else:
+            msg.attach(part)
+
+        logger.debug("Added attachment: {} ({} bytes)", filename, file_size)
+
+    # ==================== MIME Types ====================
+
+    _MIME_TYPES: dict[str, str] = {
+        ".pdf": "application/pdf",
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xls": "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".txt": "text/plain",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".zip": "application/zip",
+    }
+
+    @staticmethod
+    def _get_mime_type(ext: str) -> str:
+        """Get MIME type for file extension."""
+        return EmailTool._MIME_TYPES.get(ext, "application/octet-stream")
+
+    # ==================== IMAP Polling ====================
+
+    def start_polling(self, bus: MessageBus) -> None:
+        """Start IMAP polling for inbound emails."""
+        self._bus = bus
+        if not self._validate_config():
+            logger.error("Email tool: IMAP not configured, skipping polling")
+            return
+        asyncio.create_task(self._polling_loop())
+
+    async def _polling_loop(self) -> None:
+        """Main polling loop."""
+        self._running = True
+        logger.info("Starting Email tool polling (IMAP)...")
+
+        poll_seconds = max(5, int(self.config.poll_interval_seconds))
+        max_retries = 2
+
+        while self._running:
+            inbound_items = []
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    inbound_items = await asyncio.to_thread(self._fetch_new_messages)
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        logger.warning("Email polling attempt {} failed: {}, retrying...", attempt + 1, e)
+                    else:
+                        logger.error("Email polling failed after {} attempts: {}", max_retries + 1, e)
+
+            if last_error and not inbound_items:
+                await asyncio.sleep(poll_seconds)
+                continue
+
+            for item in inbound_items:
+                sender = item["sender"]
+                subject = item.get("subject", "")
+                message_id = item.get("message_id", "")
+
+                if subject:
+                    self._last_subject_by_chat[sender] = subject
+                if message_id:
+                    self._last_message_id_by_chat[sender] = message_id
+
+                # Send to agent via bus
+                if self._bus:
+                    msg = InboundMessage(
+                        channel="email",
+                        sender_id=sender,
+                        chat_id=sender,
+                        content=item["content"],
+                        media=item.get("media", []),
+                        metadata=item.get("metadata", {}),
+                        to="",
+                    )
+                    await self._bus.publish_inbound(msg)
+
+            await asyncio.sleep(poll_seconds)
+
+    def stop_polling(self) -> None:
+        """Stop IMAP polling."""
+        self._running = False
+
+    def _validate_config(self) -> bool:
+        """Validate IMAP config for receiving emails."""
+        if not self.config:
+            return False
+        missing = []
+        if not self.config.imap_host:
+            missing.append("imap_host")
+        if not self.config.imap_username:
+            missing.append("imap_username")
+        if not self.config.imap_password:
+            missing.append("imap_password")
+
+        if missing:
+            logger.error("Email tool IMAP not configured, missing: {}", ', '.join(missing))
+            return False
+        return True
+
     def _fetch_new_messages(self) -> list[dict[str, Any]]:
         """Poll IMAP and return parsed unread messages."""
         return self._fetch_messages(
@@ -292,32 +434,6 @@ class EmailChannel(BaseChannel):
             mark_seen=self.config.mark_seen,
             dedupe=True,
             limit=0,
-        )
-
-    def fetch_messages_between_dates(
-        self,
-        start_date: date,
-        end_date: date,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        """
-        Fetch messages in [start_date, end_date) by IMAP date search.
-
-        This is used for historical summarization tasks (e.g. "yesterday").
-        """
-        if end_date <= start_date:
-            return []
-
-        return self._fetch_messages(
-            search_criteria=(
-                "SINCE",
-                self._format_imap_date(start_date),
-                "BEFORE",
-                self._format_imap_date(end_date),
-            ),
-            mark_seen=False,
-            dedupe=False,
-            limit=max(1, int(limit)),
         )
 
     def _fetch_messages(
@@ -330,11 +446,7 @@ class EmailChannel(BaseChannel):
         """Fetch messages by arbitrary IMAP search criteria."""
         messages: list[dict[str, Any]] = []
         mailbox = self.config.imap_mailbox or "INBOX"
-
-        # IMAP connection timeout
         imap_timeout = 60
-
-        # Check if proxy is enabled
         use_proxy = self.config.use_proxy and self.proxy_config.enabled
         proxy_url = None
 
@@ -344,34 +456,26 @@ class EmailChannel(BaseChannel):
                 logger.info("Using proxy for IMAP: {}", proxy_url)
 
         if use_proxy and proxy_url and proxy_url.startswith("socks"):
-            # Use SOCKS proxy - set default proxy and patch socket
             try:
                 import socks
-                import re
-                # Parse proxy host and port
                 match = re.search(r"socks[45]?://([^:]+):(\d+)", proxy_url)
                 if match:
                     proxy_host = match.group(1)
                     proxy_port = int(match.group(2))
                     proxy_type = socks.SOCKS5 if "5" in proxy_url else socks.SOCKS4
-                    # Set default proxy for this thread
                     socks.set_default_proxy(proxy_type, proxy_host, proxy_port)
-                    # Patch socket to use proxy
                     original_socket = socket.socket
                     socket.socket = socks.socksocket
                     try:
-                        if self.config.imap_use_ssl:
-                            client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
-                        else:
-                            client = imaplib.IMAP4(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
+                        client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout) \
+                            if self.config.imap_use_ssl else \
+                            imaplib.IMAP4(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
                     finally:
-                        # Restore original socket
                         socket.socket = original_socket
                         socks.set_default_proxy()
                 else:
                     client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
             except ImportError:
-                logger.warning("PySocks not installed, connecting without proxy")
                 client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
         elif self.config.imap_use_ssl:
             client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port, timeout=imap_timeout)
@@ -391,6 +495,7 @@ class EmailChannel(BaseChannel):
             ids = data[0].split()
             if limit > 0 and len(ids) > limit:
                 ids = ids[-limit:]
+
             for imap_id in ids:
                 status, fetched = client.fetch(imap_id, "(BODY.PEEK[] UID)")
                 if status != "OK" or not fetched:
@@ -413,8 +518,6 @@ class EmailChannel(BaseChannel):
                 date_value = parsed.get("Date", "")
                 message_id = parsed.get("Message-ID", "").strip()
                 body = self._extract_text_body(parsed)
-
-                # Extract attachments
                 media_paths, attachment_names = self._extract_attachments(parsed)
 
                 if not body:
@@ -422,7 +525,6 @@ class EmailChannel(BaseChannel):
 
                 body = body[: self.config.max_body_chars]
 
-                # Add attachment info to content
                 attachment_text = ""
                 if attachment_names:
                     attachment_text = f"\n\nAttachments: {', '.join(attachment_names)}"
@@ -442,28 +544,24 @@ class EmailChannel(BaseChannel):
                     "sender_email": sender,
                     "uid": uid,
                 }
-                messages.append(
-                    {
-                        "sender": sender,
-                        "subject": subject,
-                        "message_id": message_id,
-                        "content": content,
-                        "media": media_paths,
-                        "metadata": metadata,
-                    }
-                )
+
+                messages.append({
+                    "sender": sender,
+                    "subject": subject,
+                    "message_id": message_id,
+                    "content": content,
+                    "media": media_paths,
+                    "metadata": metadata,
+                })
 
                 if dedupe and uid:
                     self._processed_uids.add(uid)
-                    # mark_seen is the primary dedup; this set is a safety net
                     if len(self._processed_uids) > self._MAX_PROCESSED_UIDS:
-                        # Evict a random half to cap memory; mark_seen is the primary dedup
                         self._processed_uids = set(list(self._processed_uids)[len(self._processed_uids) // 2:])
 
                 if mark_seen:
                     try:
                         client.store(imap_id, "+FLAGS", "\\Seen")
-                        logger.debug("Marked email as seen: {}", subject[:30])
                     except Exception as e:
                         logger.error("Failed to mark email as seen: {}", e)
         finally:
@@ -474,10 +572,9 @@ class EmailChannel(BaseChannel):
 
         return messages
 
-    @classmethod
-    def _format_imap_date(cls, value: date) -> str:
-        """Format date for IMAP search (always English month abbreviations)."""
-        month = cls._IMAP_MONTHS[value.month - 1]
+    @staticmethod
+    def _format_imap_date(value: date) -> str:
+        month = EmailTool._IMAP_MONTHS[value.month - 1]
         return f"{value.day:02d}-{month}-{value.year}"
 
     @staticmethod
@@ -508,7 +605,6 @@ class EmailChannel(BaseChannel):
 
     @classmethod
     def _extract_text_body(cls, msg: Any) -> str:
-        """Best-effort extraction of readable body text."""
         if msg.is_multipart():
             plain_parts: list[str] = []
             html_parts: list[str] = []
@@ -553,21 +649,8 @@ class EmailChannel(BaseChannel):
         text = re.sub(r"<[^>]+>", "", text)
         return html.unescape(text)
 
-    # Maximum attachment size: 10MB
-    MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
-
-    # Blocked dangerous file extensions
-    BLOCKED_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".com", ".pif", ".msi", ".dll", ".vbs", ".js", ".jar", ".sh", ".ps1", ".deb", ".rpm"}
-
     def _extract_attachments(self, msg: Any) -> tuple[list[str], list[str]]:
-        """Extract attachments from email and save to local directory.
-
-        Args:
-            msg: Parsed email message
-
-        Returns:
-            Tuple of (media_paths, attachment_names)
-        """
+        """Extract attachments from email."""
         media_dir = Path.home() / ".superbot" / "media"
         media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -584,30 +667,23 @@ class EmailChannel(BaseChannel):
                 if not filename:
                     continue
 
-                # Decode filename if encoded
                 filename = self._decode_header_value(filename)
-
-                # Check file extension for safety
                 ext = Path(filename).suffix.lower()
                 if ext in self.BLOCKED_EXTENSIONS:
                     logger.warning("Blocked dangerous attachment: {}", filename)
                     attachment_info.append(f"{filename} (blocked)")
                     continue
 
-                # Get content
                 payload = part.get_payload(decode=True)
                 if not payload or not isinstance(payload, bytes):
                     continue
 
-                # Check file size
                 if len(payload) > self.MAX_ATTACHMENT_SIZE:
                     logger.warning("Attachment too large ({} bytes): {}", len(payload), filename)
                     attachment_info.append(f"{filename} (too large)")
                     continue
 
-                # Save to file
                 file_path = media_dir / filename
-                # Avoid overwriting existing files
                 if file_path.exists():
                     stem = file_path.stem
                     suffix = file_path.suffix
@@ -622,22 +698,3 @@ class EmailChannel(BaseChannel):
             logger.error("Error extracting email attachments: {}", e)
 
         return media_paths, attachment_info
-
-    def _get_notification_channel(self) -> str | None:
-        """Get the first available non-email channel for notifications.
-
-        Uses the order from config file (excluding email).
-        """
-        for channel_name in self.channels:
-            if channel_name != "email":
-                logger.info("Found notification channel: {}", channel_name)
-                return channel_name
-
-        return None
-
-    def _reply_subject(self, base_subject: str) -> str:
-        subject = (base_subject or "").strip() or "superbot reply"
-        prefix = self.config.subject_prefix or "Re: "
-        if subject.lower().startswith("re:"):
-            return subject
-        return f"{prefix}{subject}"

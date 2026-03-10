@@ -320,6 +320,48 @@ class MemorySystem:
 
         return results
 
+    def get_memory_context(self, query: str, top_n: int = 5) -> str:
+        """获取格式化后的记忆上下文，用于 system prompt。
+
+        Args:
+            query: 当前查询文本
+            top_n: 返回结果数量
+
+        Returns:
+            格式化的记忆上下文字符串，如果无结果则返回空字符串
+        """
+        results = self.recall(query, top_n=top_n)
+
+        # 构建格式化输出
+        parts = []
+
+        # 添加 facts
+        facts = results.get("facts", [])
+        if facts:
+            parts.append("## Relevant Facts")
+            for fact in facts[:3]:
+                content = fact.get("content", "")
+                if content:
+                    parts.append(f"- {content}")
+
+        # 添加 raw_logs（原始对话）
+        raw_logs = results.get("raw_logs", [])
+        if raw_logs:
+            parts.append("\n## Recent Conversations")
+            for log in raw_logs[:3]:
+                content = log.get("content", "")
+                timestamp = log.get("timestamp", "")
+                if content:
+                    ts = f" ({timestamp})" if timestamp else ""
+                    parts.append(f"- {content}{ts}")
+
+        # 添加 LLM 理解（如果存在）
+        understanding = results.get("understanding")
+        if understanding:
+            parts.append(f"\n## Context Summary\n{understanding}")
+
+        return "\n".join(parts) if parts else ""
+
     def shutdown(self):
         """关闭系统"""
         pass

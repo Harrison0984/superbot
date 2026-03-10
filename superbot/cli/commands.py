@@ -407,7 +407,6 @@ def gateway(
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
         from superbot.agent.tools.cron import CronTool
-        from superbot.agent.tools.message import MessageTool
         reminder_note = (
             "[Scheduled Task] Timer finished.\n\n"
             f"Task '{job.name}' has been triggered.\n"
@@ -429,10 +428,6 @@ def gateway(
         finally:
             if isinstance(cron_tool, CronTool) and cron_token is not None:
                 cron_tool.reset_cron_context(cron_token)
-
-        message_tool = agent.tools.get("message")
-        if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
-            return response
 
         if job.payload.deliver and job.payload.to and response:
             from superbot.bus.events import OutboundMessage
@@ -619,6 +614,12 @@ def agent(
                 while True:
                     try:
                         msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+
+                        # Check "to" field for routing - only show messages for this CLI session
+                        if msg.to and msg.to != cli_channel:
+                            # Not for CLI, skip
+                            continue
+
                         if msg.metadata.get("_progress"):
                             is_tool_hint = msg.metadata.get("_tool_hint", False)
                             ch = agent_loop.channels_config
@@ -664,6 +665,7 @@ def agent(
                             sender_id="user",
                             chat_id=cli_chat_id,
                             content=user_input,
+                            to=cli_channel,
                         ))
 
                         with _thinking_ctx():

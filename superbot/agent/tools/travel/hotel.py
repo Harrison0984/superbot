@@ -9,7 +9,6 @@ from superbot.agent.tools.base import Tool, tool_error
 from superbot.agent.tools.travel.shared import get_shared_browser
 from superbot.agent.tools.travel.session import get_session_manager, verify_login
 from superbot.agent.tools.travel.logger import get_logger
-from superbot.bus.events import ToolEvent
 
 logger = get_logger(__name__)
 
@@ -20,7 +19,6 @@ class HotelTool(Tool):
     # 配置
     WAIT_TIMEOUT = 300  # 5分钟
     POLL_INTERVAL = 5   # 5秒
-    PROGRESS_INTERVAL = 30  # 30秒
 
     @property
     def name(self) -> str:
@@ -85,13 +83,19 @@ class HotelTool(Tool):
         }"""
         return await page.evaluate(js_code)
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
         """Execute hotel search."""
         city = kwargs.get("city", "")
         checkin = kwargs.get("checkin", "")
         checkout = kwargs.get("checkout", "")
         keywords = kwargs.get("keywords", "")
-        session_key = kwargs.get("_session_key", "cli:direct")
         task_id = str(uuid.uuid4())
 
         try:
@@ -122,23 +126,16 @@ class HotelTool(Tool):
                 logger.info("未登录，生成二维码...")
                 success, qr_path = await self.session.generate_qr_code(page)
                 if success:
-                    # 发送 waiting 事件（带二维码）
-                    self._emit_event(ToolEvent(
-                        session_key=session_key,
-                        task_id=task_id,
-                        tool_name="hotel_search",
-                        event_type="waiting",
-                        content="请扫码登录，后台任务正在等待...",
-                        media=[str(qr_path)]
-                    ))
-
                     # 启动后台任务
                     asyncio.create_task(
-                        self._wait_for_login_and_search(task_id, session_key, city, checkin, checkout, keywords, page)
+                        self._wait_for_login_and_search(city, checkin, checkout, keywords, page)
                     )
 
                     # 立即返回
-                    return json.dumps({"_tool_background": True, "task_id": task_id})
+                    return json.dumps({
+                        "content": "请扫码登录，登录后自动开始搜索",
+                        "media": [str(qr_path)] if qr_path else []
+                    })
                 else:
                     return tool_error("qr_generation_failed", "生成登录二维码失败，请重试")
 
@@ -151,8 +148,6 @@ class HotelTool(Tool):
 
     async def _wait_for_login_and_search(
         self,
-        task_id: str,
-        session_key: str,
         city: str,
         checkin: str,
         checkout: str,
@@ -160,51 +155,24 @@ class HotelTool(Tool):
         page
     ):
         """后台等待登录并搜索"""
-        last_progress = 0
-
         for elapsed in range(0, self.WAIT_TIMEOUT, self.POLL_INTERVAL):
             await asyncio.sleep(self.POLL_INTERVAL)
-
-            # 定时发送 progress
-            if elapsed - last_progress >= self.PROGRESS_INTERVAL:
-                self._emit_event(ToolEvent(
-                    session_key=session_key,
-                    task_id=task_id,
-                    tool_name="hotel_search",
-                    event_type="progress",
-                    content=f"等待扫码中... ({elapsed // 60}分)"
-                ))
-                last_progress = elapsed
 
             # 检查登录（需要刷新页面检查二维码是否消失）
             try:
                 await page.reload()
-                await asyncio.sleep(2)
                 is_logged_in = await verify_login(page, "https://hotels.ctrip.com/hotels/list")
                 if is_logged_in:
-                    logger.info("扫码成功，开始搜索...")
                     # 登录成功，继续搜索
                     result = await self._do_search(city, checkin, checkout, keywords, page)
-                    self._emit_event(ToolEvent(
-                        session_key=session_key,
-                        task_id=task_id,
-                        tool_name="hotel_search",
-                        event_type="complete",
-                        content=result
-                    ))
+                    self.send_message(content=result, to="llm")
                     return
             except Exception as e:
                 logger.warning(f"检查登录状态失败: {e}")
 
         # 超时
         await page.close()
-        self._emit_event(ToolEvent(
-            session_key=session_key,
-            task_id=task_id,
-            tool_name="hotel_search",
-            event_type="error",
-            content="扫码超时，请重试"
-        ))
+        self.send_message(content="扫码超时，请重试", to="")
 
     async def _do_search(self, city: str, checkin: str, checkout: str, keywords: str, page) -> str:
         """执行酒店搜索"""
@@ -215,21 +183,20 @@ class HotelTool(Tool):
                 params += f"&keyword={keywords}"
             search_url = base_url + params
 
-            logger.info(f"搜索酒店: {search_url}")
             await page.goto("https://www.ctrip.com", wait_until="domcontentloaded")
-            await asyncio.sleep(3)
             await page.goto(search_url, wait_until="networkidle")
-            await asyncio.sleep(10)
-
             hotels = await self._extract_hotels(page)
 
             if hotels:
                 return json.dumps({
-                    "city": city,
-                    "checkin": checkin,
-                    "checkout": checkout,
-                    "hotels": hotels
-                }, ensure_ascii=False, indent=2)
+                    "content": json.dumps({
+                        "city": city,
+                        "checkin": checkin,
+                        "checkout": checkout,
+                        "hotels": hotels
+                    }, ensure_ascii=False),
+                    "media": []
+                })
             else:
                 return tool_error("no_results", f"未找到酒店: {city}")
 
