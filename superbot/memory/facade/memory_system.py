@@ -333,41 +333,41 @@ class MemorySystem:
         results = self.recall(query, top_n=top_n)
         lines = []
 
-        # 1. 格式化语义关联事实 (Facts)
+        # 1. Format semantic facts
         facts = results.get("facts", [])
         if facts:
-            lines.append("【语义关联事实】")
-            tag_tracker = {}  # 记录已出现的 tag，用于标记"最新"和"历史记录"
+            lines.append("## Relevant Facts")
+            tag_tracker = {}  # Track tags for "latest" vs "history" markers
 
             for fact in facts[:5]:
                 content = fact.get("content", "")
                 if not content:
                     continue
 
-                # 从 metadata 获取 tag
+                # Get tag from metadata
                 metadata = fact.get("metadata", {})
                 tag = metadata.get("tag", "")
 
-                # 状态标记逻辑
+                # Status label logic
                 if tag not in tag_tracker:
-                    status_label = ""  # 最新的一条不打特殊标签
+                    status_label = ""  # Latest entry has no special label
                     tag_tracker[tag] = 1
                 else:
-                    status_label = "(历史记录)"  # 同一个 Tag 下非第一条标记为历史
+                    status_label = "(history)"  # Same tag, non-first entry marked as history
 
-                # 提取日期
+                # Extract date
                 timestamp = fact.get("metadata", {}).get("timestamp", "")
                 date_str = timestamp.split(" ")[0] if timestamp and " " in timestamp else (timestamp[:10] if timestamp else "")
 
                 line = f"- [{date_str}] {tag}{status_label}: {content}"
                 lines.append(line)
 
-        lines.append("")  # 换行分隔
+        lines.append("")  # Blank line separator
 
-        # 2. 格式化逻辑关系图谱 (Relations)
+        # 2. Format logical relationship graph
         relations = results.get("relations", [])
         if relations:
-            lines.append("【逻辑关系图谱】")
+            lines.append("## Relationship Graph")
             for rel in relations[:5]:
                 head = rel.get("head", "")
                 relation = rel.get("relation", "")
@@ -375,23 +375,23 @@ class MemorySystem:
                 if head and relation and tail:
                     lines.append(f"- ({head}) --[{relation}]--> ({tail})")
 
-        lines.append("")  # 换行分隔
+        lines.append("")  # Blank line separator
 
-        # 3. 添加原始对话 (Recent Conversations)
+        # 3. Add raw conversations
         raw_logs = results.get("raw_logs", [])
         if raw_logs:
-            lines.append("【最近对话】")
+            lines.append("## Recent Conversations")
             for log in raw_logs[:3]:
                 content = log.get("content", "")
                 timestamp = log.get("timestamp", "")
                 if content:
-                    # 提取 [USER] 或 [ASSISTANT] 前缀
+                    # Extract [USER] or [ASSISTANT] prefix
                     prefix = ""
                     if content.startswith("[USER]"):
-                        prefix = "[用户]"
+                        prefix = "[User]"
                         content = content[7:]
                     elif content.startswith("[ASSISTANT]"):
-                        prefix = "[助手]"
+                        prefix = "[Assistant]"
                         content = content[11:]
 
                     date_str = timestamp.split(" ")[0] if timestamp and " " in timestamp else (timestamp[:10] if timestamp else "")
@@ -403,11 +403,11 @@ class MemorySystem:
                     else:
                         lines.append(f"- {content[:100]}")
 
-        # 4. 添加 LLM 理解（如果存在）
+        # 4. Add LLM understanding (if exists)
         understanding = results.get("understanding")
         if understanding:
             lines.append("")
-            lines.append(f"【上下文总结】\n{understanding}")
+            lines.append(f"## Context Summary\n{understanding}")
 
         return "\n".join(lines) if lines else ""
 
