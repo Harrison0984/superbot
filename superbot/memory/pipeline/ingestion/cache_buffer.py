@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import numpy as np
+from loguru import logger
 
 
 class CacheBuffer:
@@ -43,6 +44,7 @@ class CacheBuffer:
             for existing in self.buffer:
                 similarity = self.similarity_func(vector, existing["vector"])
                 if similarity >= self.similarity_threshold:
+                    logger.debug("[CacheBuffer] rejected: semantic duplicate (similarity={:.2f} >= {})", similarity, self.similarity_threshold)
                     return False  # 语义重复，拒绝添加
 
         text_bytes = len(text.encode('utf-8'))
@@ -55,12 +57,14 @@ class CacheBuffer:
             "timestamp": datetime.now()
         })
         self._total_bytes += text_bytes
+        logger.debug("[CacheBuffer] pushed: buffer_size={}/{}, total_bytes={}", len(self.buffer), self.buffer_count, self._total_bytes)
 
         # 如果超过阈值，FIFO 淘汰最旧的内容
         while (len(self.buffer) > self.buffer_count or
                self._total_bytes > self.buffer_size) and self.buffer:
             removed = self.buffer.pop(0)  # 移除最旧的
             self._total_bytes -= removed["text_bytes"]
+            logger.debug("[CacheBuffer] evicted oldest item, buffer_size={}", len(self.buffer))
 
         return True
 

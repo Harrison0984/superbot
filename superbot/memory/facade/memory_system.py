@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 import numpy as np
+from loguru import logger
 
 # 添加 src 到路径
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -126,21 +127,27 @@ class MemorySystem:
             是否成功处理
         """
         with self._lock:
+            logger.debug("[Memory] remember() called with text: {}", raw_text[:100])
+
             # 1. 物理过滤
             if not self.entropy_gatekeeper.should_accept(raw_text):
+                logger.debug("[Memory] remember() rejected by entropy gatekeeper: {}", raw_text[:100])
                 return False
 
             # 2. 获取向量
             if self._embedding is None:
                 raise RuntimeError("Embedding provider not set. Please call set_embedding() first.")
             vector = self._embedding.encode(raw_text)
+            logger.debug("[Memory] remember() encoded vector shape: {}", vector.shape)
 
             # 3. 语义去重
             if not self.semantic_cache.push(raw_text, vector):
+                logger.debug("[Memory] remember() rejected by semantic cache (duplicate): {}", raw_text[:100])
                 return False
 
             # 4. 加入批量处理缓冲区
             self.process_buffer.push(raw_text, vector)
+            logger.debug("[Memory] remember() pushed to process_buffer, size: {}", len(self.process_buffer.buffer))
 
             # 5. 处理缓冲区
             self._process_buffer()
@@ -149,17 +156,21 @@ class MemorySystem:
             self.history.append(raw_text)
             self._track_topic(raw_text)
 
+            logger.debug("[Memory] remember() success, history length: {}", len(self.history))
             return True
 
     def _process_buffer(self):
         """处理缓冲区中的内容"""
         if not self.process_buffer.should_process():
+            logger.debug("[Memory] _process_buffer() skipped, buffer not ready")
             return
 
         batch_items = self.process_buffer.get_batch()
         if not batch_items:
+            logger.debug("[Memory] _process_buffer() skipped, no batch items")
             return
 
+        logger.debug("[Memory] _process_buffer() processing {} items", len(batch_items))
         batch_text = [item["text"] for item in batch_items]
 
         # 调用 LLM 提纯
@@ -184,7 +195,7 @@ class MemorySystem:
                     else:
                         extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
                 except Exception as e:
-                    # Skip triple extraction on error
+                    logger.warning("[Memory] _process_buffer() LLM extraction failed: {}", e)
                     extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
             else:
                 extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
@@ -207,6 +218,7 @@ class MemorySystem:
                     source="memory",
                     incremental_density=None  # 可从 EntropyGatekeeper 获取
                 )
+                logger.debug("[Memory] _process_buffer() added raw_log id: {}", raw_id)
 
                 # 2. 生成 vector_id (使用 UUID)
                 vector_id = str(uuid.uuid4())
@@ -220,19 +232,23 @@ class MemorySystem:
                     entities=entities,
                     facts=facts
                 )
+                logger.debug("[Memory] _process_buffer() added memory_node id: {}, tag: {}", memory_node_id, tag)
 
                 # 4. 存入向量库（处理空值）
+                # ChromaDB only supports str, int, float, bool in metadata - convert to JSON strings
+                import json
                 metadata = {"tag": tag, "memory_node_id": memory_node_id}
                 if entities:
-                    metadata["entities"] = entities
+                    metadata["entities"] = json.dumps(entities)
                 if facts:
-                    metadata["facts"] = facts
+                    metadata["facts"] = json.dumps(facts)
                 self.vector_store.add(
                     ids=[vector_id],
                     vectors=[vector],
                     documents=[summary],
                     metadatas=[metadata]
                 )
+                logger.debug("[Memory] _process_buffer() added vector_store id: {}", vector_id)
 
                 # 5. 存储实体关系
                 for fact in facts:
@@ -249,6 +265,9 @@ class MemorySystem:
                                     tail=obj,
                                     ref_id=raw_id
                                 )
+                                logger.debug("[Memory] _process_buffer() added relation: {}--{}-->{}", subject, relation, obj)
+
+        logger.debug("[Memory] _process_buffer() completed for {} items", len(batch_items))
 
     def _track_topic(self, text: str) -> Optional[str]:
         """滑动窗口话题追踪"""
@@ -283,7 +302,11 @@ class MemorySystem:
         返回:
             包含 facts、raw_logs、relations 的字典
         """
+        logger.debug("[Memory] recall() called with query: {}, top_n: {}", query_text[:100], top_n)
+
         results = self.retriever.retrieve(query_text, top_n=top_n)
+        logger.debug("[Memory] recall() retrieved {} facts, {} relations",
+                     len(results.get("facts", [])), len(results.get("relations", [])))
 
         # 获取原始数据
         raw_logs = []
@@ -303,6 +326,7 @@ class MemorySystem:
                         })
 
         results["raw_logs"] = raw_logs
+        logger.debug("[Memory] recall() loaded {} raw_logs", len(raw_logs))
 
         llm = self._get_llm()
         if llm is not None and self.history:
@@ -314,8 +338,10 @@ class MemorySystem:
             )
             results["understanding"] = understanding
             results["type"] = "llm_understanding"
+            logger.debug("[Memory] recall() using LLM understanding: {}", understanding[:100] if understanding else "")
         else:
             results["type"] = "direct_retrieval"
+            logger.debug("[Memory] recall() using direct retrieval (no LLM or no history)")
 
         return results
 
@@ -329,6 +355,7 @@ class MemorySystem:
         Returns:
             格式化的记忆上下文字符串，如果无结果则返回空字符串
         """
+        logger.debug("[Memory] get_memory_context() called with query: {}", query[:100])
         results = self.recall(query, top_n=top_n)
         lines = []
 
@@ -408,7 +435,9 @@ class MemorySystem:
             lines.append("")
             lines.append(f"## Context Summary\n{understanding}")
 
-        return "\n".join(lines) if lines else ""
+        result = "\n".join(lines) if lines else ""
+        logger.debug("[Memory] get_memory_context() returning {} chars", len(result))
+        return result
 
     def shutdown(self):
         """关闭系统"""

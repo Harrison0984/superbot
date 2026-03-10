@@ -61,7 +61,7 @@ class Config(BaseModel):
     # ==================== 批量处理缓冲区 ====================
     # CacheBuffer 使用，用于批量提交给 LLM 提纯
 
-    process_buffer_count: int = 3
+    process_buffer_count: int = 1
     """
     批量处理缓冲区数量
 

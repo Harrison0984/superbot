@@ -361,7 +361,9 @@ def gateway(
         from superbot.agent.memory_adapter import create_memory_adapter
 
         embedding_provider = create_embedding_provider(config.embedding)
-        llm_adapter = create_llm_adapter(main_provider, config.agents.defaults.model, config.embedding)
+        # Use local model for memory if available, otherwise fall back to main provider
+        llm_provider_for_memory = memory_provider if memory_provider else main_provider
+        llm_adapter = create_llm_adapter(llm_provider_for_memory, config.agents.defaults.model, config.embedding)
 
         memory_system = create_memory_adapter(
             workspace=config.workspace_path,
@@ -516,7 +518,9 @@ def agent(
         from superbot.agent.memory_adapter import create_memory_adapter
 
         embedding_provider = create_embedding_provider(config.embedding)
-        llm_adapter = create_llm_adapter(main_provider, config.agents.defaults.model, config.embedding)
+        # Use local model for memory if available, otherwise fall back to main provider
+        llm_provider_for_memory = memory_provider if memory_provider else main_provider
+        llm_adapter = create_llm_adapter(llm_provider_for_memory, config.agents.defaults.model, config.embedding)
 
         memory_system = create_memory_adapter(
             workspace=config.workspace_path,

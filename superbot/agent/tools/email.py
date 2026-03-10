@@ -352,6 +352,29 @@ class EmailTool(Tool):
         if not self._validate_config():
             logger.error("Email tool: IMAP not configured, skipping polling")
             return
+
+        # Try to get running event loop, otherwise create one in background thread
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running event loop - start polling in background thread with new loop
+            import threading
+
+            def run_polling():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    new_loop.run_until_complete(self._polling_loop())
+                except Exception as e:
+                    logger.error("Email polling error: {}", e)
+                finally:
+                    new_loop.close()
+
+            thread = threading.Thread(target=run_polling, daemon=True)
+            thread.start()
+            return
+
+        # Running loop exists - schedule the task
         asyncio.create_task(self._polling_loop())
 
     async def _polling_loop(self) -> None:

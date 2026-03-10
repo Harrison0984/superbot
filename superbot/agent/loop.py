@@ -661,6 +661,8 @@ class AgentLoop:
                 {"role": "user", "content": msg.content},
             ]
 
+        logger.debug("initial_messages for {}:{}: {}", msg.channel, msg.sender_id, initial_messages)
+
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
@@ -673,6 +675,8 @@ class AgentLoop:
             initial_messages, msg.channel, msg.sender_id, msg.chat_id,
             on_progress=on_progress or _bus_progress,
         )
+
+        logger.debug("final_content for {}:{}: {}", msg.channel, msg.sender_id, final_content)
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."

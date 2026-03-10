@@ -2,6 +2,7 @@
 from typing import Optional
 
 import zstandard as zstd
+from loguru import logger
 
 
 class EntropyGatekeeper:
@@ -12,12 +13,10 @@ class EntropyGatekeeper:
         threshold: float = 0.5,
         buffer_count: int = 100,
         buffer_size: int = 64 * 1024,  # 64KB
-        min_text_length: int = 20
     ):
         self.threshold = threshold
         self.buffer_count = buffer_count
         self.buffer_size = buffer_size
-        self.min_text_length = min_text_length
 
         # 使用列表而不是字节串，便于管理
         self.window_items: list[str] = []
@@ -61,9 +60,6 @@ class EntropyGatekeeper:
         - 值越高说明信息重复度高（可压缩）
         - 值越低说明信息增量高（新鲜）
         """
-        if len(new_text) < self.min_text_length:
-            return 0.9  # 短文本默认高重复
-
         # 压缩新文本
         new_bytes = new_text.encode('utf-8')
         new_compressed = self.cctx.compress(new_bytes)
@@ -84,21 +80,22 @@ class EntropyGatekeeper:
         判断新文本是否应该被接受
 
         拒绝条件：
-        1. 文本太短
-        2. 字符重复率太高
-        3. 增量密度太高（与历史太重复）
+        1. 字符重复率太高
+        2. 增量密度太高（与历史太重复）
         """
-        if not new_text or len(new_text.strip()) < self.min_text_length:
+        if not new_text:
             return False
 
         # 检查字符重复率
         repetition_ratio = self._calculate_word_repetition_ratio(new_text)
         if repetition_ratio > 0.8:  # 超过 80% 重复字符
+            logger.debug("[EntropyGatekeeper] rejected: high repetition ratio ({:.2f})", repetition_ratio)
             return False
 
         # 检查增量密度
         incremental_density = self._calculate_incremental_density(new_text)
         if incremental_density > self.threshold:
+            logger.debug("[EntropyGatekeeper] rejected: high incremental density ({:.2f} > {:.2f})", incremental_density, self.threshold)
             return False
 
         # 接受，添加到窗口
@@ -106,6 +103,7 @@ class EntropyGatekeeper:
         self._total_bytes += len(new_text.encode('utf-8'))
         self._clean_old_entries()
 
+        logger.debug("[EntropyGatekeeper] accepted: incremental_density={:.2f}, window_size={}", incremental_density, len(self.window_items))
         return True
 
     def status(self):

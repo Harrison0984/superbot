@@ -243,6 +243,7 @@ class SuperbotLLMAdapter:
 
         # Check if provider has async chat
         chat_method = getattr(self._provider, "chat", None)
+        timeout_seconds = 30  # 30 second timeout for LLM calls
         if chat_method and asyncio.iscoroutinefunction(chat_method):
             # Provider is async - use shared ThreadPoolExecutor to avoid event loop issues
             def _run_async():
@@ -253,15 +254,19 @@ class SuperbotLLMAdapter:
                     temperature=temperature,
                 ))
             executor = _get_executor()
-            response = executor.submit(_run_async).result()
+            response = executor.submit(_run_async).result(timeout=timeout_seconds)
         else:
             # Provider is sync
-            response = self._provider.chat(
-                messages=[{"role": "user", "content": prompt}],
-                model=self._default_model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    self._provider.chat,
+                    messages=[{"role": "user", "content": prompt}],
+                    model=self._default_model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                response = future.result(timeout=timeout_seconds)
         return response.content or ""
 
     def extract_triples(self, text: str) -> list[dict[str, Any]]:

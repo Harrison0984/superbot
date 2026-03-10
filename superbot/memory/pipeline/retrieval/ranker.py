@@ -39,12 +39,19 @@ class EnhancedRetriever:
 
     def _extract_entities_from_metadata(self, vector_results: List[Dict]) -> List[str]:
         """从向量检索结果的 metadata 中自动提取实体"""
+        import json
         entities = set()
         for result in vector_results:
             metadata = result.get("metadata", {})
             # 从 entities 字段提取
             if "entities" in metadata:
                 entities_list = metadata["entities"]
+                # Handle both JSON string and list formats (for backward compatibility)
+                if isinstance(entities_list, str):
+                    try:
+                        entities_list = json.loads(entities_list)
+                    except (json.JSONDecodeError, TypeError):
+                        entities_list = []
                 if isinstance(entities_list, list):
                     for entity in entities_list:
                         if isinstance(entity, dict):
@@ -70,6 +77,8 @@ class EnhancedRetriever:
         返回:
             包含 facts 和 relations 的字典
         """
+        logger.debug("[Retriever] retrieve() query: {}, top_n: {}", query_text[:100], top_n)
+
         # 1. 向量检索
         model = self._get_model()
         query_vector = model.encode(query_text).tolist()
@@ -78,6 +87,7 @@ class EnhancedRetriever:
             query_vector=query_vector,
             n=top_n * 2  # 多取一些用于后续筛选
         )
+        logger.debug("[Retriever] vector_store.search() returned {} results", len(vector_results))
 
         # 2. 自动从检索结果中提取实体
         query_entities = self._extract_entities_from_metadata(vector_results)
@@ -128,11 +138,14 @@ class EnhancedRetriever:
 
         # 7. 关系路召回（基于自动提取的实体）
         relations = self._relation_search(query_entities)
+        logger.debug("[Retriever] _relation_search() returned {} relations", len(relations))
 
-        return {
+        result = {
             "facts": facts,
             "relations": relations
         }
+        logger.debug("[Retriever] retrieve() returning {} facts, {} relations", len(facts), len(relations))
+        return result
 
     def _get_sql_recall_ranked(self, vector_hits: Dict[str, float]) -> List[str]:
         """SQL 增强召回"""
@@ -202,17 +215,13 @@ class EnhancedRetriever:
             # 使用 IN 查询一次获取所有实体的关系
             placeholders = ','.join(['?' for _ in query_entities])
             sql = f"""
-                SELECT id, head, relation, tail,
-                       strength * EXP(-? * (julianday('now') - julianday(COALESCE(last_seen, created_at)))) as effective_strength,
-                       last_seen, created_at
+                SELECT id, head, relation, tail, last_seen, ref_id
                 FROM relationships
                 WHERE head IN ({placeholders}) OR tail IN ({placeholders})
-                ORDER BY effective_strength DESC
+                ORDER BY id DESC
                 LIMIT 20;
             """
-            # 构建参数列表：alpha + entities + entities
-            params = [self.alpha] + query_entities + query_entities
-            cursor.execute(sql, params)
+            cursor.execute(sql, query_entities + query_entities)
             rows = cursor.fetchall()
 
             for row in rows:
@@ -221,9 +230,8 @@ class EnhancedRetriever:
                     "head": row[1],
                     "relation": row[2],
                     "tail": row[3],
-                    "strength": row[4],
-                    "last_seen": row[5],
-                    "created_at": row[6]
+                    "last_seen": row[4],
+                    "ref_id": row[5]
                 })
 
             logger.debug(f"关系查询: entities={query_entities}, found={len(results)}")
