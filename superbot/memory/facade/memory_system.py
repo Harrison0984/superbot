@@ -319,6 +319,97 @@ class MemorySystem:
 
         return results
 
+    def get_memory_context(self, query: str, top_n: int = 5) -> str:
+        """获取格式化后的记忆上下文，用于 system prompt。
+
+        Args:
+            query: 当前查询文本
+            top_n: 返回结果数量
+
+        Returns:
+            格式化的记忆上下文字符串，如果无结果则返回空字符串
+        """
+        results = self.recall(query, top_n=top_n)
+        lines = []
+
+        # 1. Format semantic facts
+        facts = results.get("facts", [])
+        if facts:
+            lines.append("## Relevant Facts")
+            tag_tracker = {}  # Track tags for "latest" vs "history" markers
+
+            for fact in facts[:5]:
+                content = fact.get("content", "")
+                if not content:
+                    continue
+
+                # Get tag from metadata
+                metadata = fact.get("metadata", {})
+                tag = metadata.get("tag", "")
+
+                # Status label logic
+                if tag not in tag_tracker:
+                    status_label = ""  # Latest entry has no special label
+                    tag_tracker[tag] = 1
+                else:
+                    status_label = "(history)"  # Same tag, non-first entry marked as history
+
+                # Extract date
+                timestamp = fact.get("metadata", {}).get("timestamp", "")
+                date_str = timestamp.split(" ")[0] if timestamp and " " in timestamp else (timestamp[:10] if timestamp else "")
+
+                line = f"- [{date_str}] {tag}{status_label}: {content}"
+                lines.append(line)
+
+        lines.append("")  # Blank line separator
+
+        # 2. Format logical relationship graph
+        relations = results.get("relations", [])
+        if relations:
+            lines.append("## Relationship Graph")
+            for rel in relations[:5]:
+                head = rel.get("head", "")
+                relation = rel.get("relation", "")
+                tail = rel.get("tail", "")
+                if head and relation and tail:
+                    lines.append(f"- ({head}) --[{relation}]--> ({tail})")
+
+        lines.append("")  # Blank line separator
+
+        # 3. Add raw conversations
+        raw_logs = results.get("raw_logs", [])
+        if raw_logs:
+            lines.append("## Recent Conversations")
+            for log in raw_logs[:3]:
+                content = log.get("content", "")
+                timestamp = log.get("timestamp", "")
+                if content:
+                    # Extract [USER] or [ASSISTANT] prefix
+                    prefix = ""
+                    if content.startswith("[USER]"):
+                        prefix = "[User]"
+                        content = content[7:]
+                    elif content.startswith("[ASSISTANT]"):
+                        prefix = "[Assistant]"
+                        content = content[11:]
+
+                    date_str = timestamp.split(" ")[0] if timestamp and " " in timestamp else (timestamp[:10] if timestamp else "")
+
+                    if prefix and date_str:
+                        lines.append(f"- {date_str} {prefix}: {content[:100]}")
+                    elif prefix:
+                        lines.append(f"- {prefix}: {content[:100]}")
+                    else:
+                        lines.append(f"- {content[:100]}")
+
+        # 4. Add LLM understanding (if exists)
+        understanding = results.get("understanding")
+        if understanding:
+            lines.append("")
+            lines.append(f"## Context Summary\n{understanding}")
+
+        return "\n".join(lines) if lines else ""
+
     def shutdown(self):
         """关闭系统"""
         pass

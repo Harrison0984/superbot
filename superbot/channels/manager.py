@@ -69,17 +69,6 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Feishu channel not available: {}", e)
 
-        # Feishu channel
-        if self.config.channels.email.enabled:
-            try:
-                from superbot.channels.email import EmailChannel
-                self.channels["email"] = EmailChannel(
-                    self.config.channels.email, self.bus, self.config.proxy, self.channels
-                )
-                logger.info("Email channel enabled")
-            except ImportError as e:
-                logger.warning("Email channel not available: {}", e)
-
         # QQ channel
         if self.config.channels.qq.enabled:
             try:
@@ -148,7 +137,7 @@ class ChannelManager:
                 logger.error("Error stopping {}: {}", name, e)
 
     async def _dispatch_outbound(self) -> None:
-        """Dispatch outbound messages to the appropriate channel."""
+        """Dispatch outbound messages to channels."""
         logger.info("Outbound dispatcher started")
 
         while True:
@@ -164,14 +153,26 @@ class ChannelManager:
                     if not msg.metadata.get("_tool_hint") and not self.config.channels.send_progress:
                         continue
 
-                channel = self.channels.get(msg.channel)
-                if channel:
-                    try:
-                        await channel.send(msg)
-                    except Exception as e:
-                        logger.error("Error sending to {}: {}", msg.channel, e)
+                # Check "to" field for routing
+                target = msg.to if msg.to else None
+
+                if target and target != "llm":
+                    # Send to specific channel
+                    channel = self.channels.get(target)
+                    if channel:
+                        try:
+                            await channel.send(msg)
+                        except Exception as e:
+                            logger.error("Error sending to {}: {}", target, e)
+                    else:
+                        logger.warning("Unknown channel: {}", target)
                 else:
-                    logger.warning("Unknown channel: {}", msg.channel)
+                    # Broadcast to all configured channels
+                    for name, channel in self.channels.items():
+                        try:
+                            await channel.send(msg)
+                        except Exception as e:
+                            logger.error("Error broadcasting to {}: {}", name, e)
 
             except asyncio.TimeoutError:
                 continue

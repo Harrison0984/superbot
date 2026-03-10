@@ -46,7 +46,15 @@ class ReadFileTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
+        path = kwargs.get("path", content)
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
@@ -54,8 +62,8 @@ class ReadFileTool(Tool):
             if not file_path.is_file():
                 return tool_error("not_file", f"Not a file: {path}")
 
-            content = file_path.read_text(encoding="utf-8")
-            return content
+            file_content = file_path.read_text(encoding="utf-8")
+            return file_content
         except PermissionError as e:
             return tool_error("io_error", str(e))
         except Exception as e:
@@ -88,12 +96,21 @@ class WriteFileTool(Tool):
             "required": ["path", "content"],
         }
 
-    async def execute(self, path: str, content: str, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
+        path = kwargs.get("path", "")
+        file_content = kwargs.get("content", content)
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
-            return f"Successfully wrote {len(content)} bytes to {file_path}"
+            file_path.write_text(file_content, encoding="utf-8")
+            return f"Successfully wrote {len(file_content)} bytes to {file_path}"
         except PermissionError as e:
             return tool_error("io_error", str(e))
         except Exception as e:
@@ -127,19 +144,29 @@ class EditFileTool(Tool):
             "required": ["path", "old_text", "new_text"],
         }
 
-    async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
+        path = kwargs.get("path", "")
+        old_text = kwargs.get("old_text", "")
+        new_text = kwargs.get("new_text", "")
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
                 return tool_error("not_found", f"File not found: {path}")
 
-            content = file_path.read_text(encoding="utf-8")
+            file_content = file_path.read_text(encoding="utf-8")
 
-            if old_text not in content:
-                return self._not_found_message(old_text, content, path)
+            if old_text not in file_content:
+                return self._not_found_message(old_text, file_content, path)
 
             # Count occurrences
-            count = content.count(old_text)
+            count = file_content.count(old_text)
             if count > 1:
                 return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
 
@@ -204,7 +231,15 @@ class ListDirTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
+        path = kwargs.get("path", content)
         try:
             dir_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not dir_path.exists():

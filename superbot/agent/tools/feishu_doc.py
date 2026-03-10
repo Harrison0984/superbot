@@ -388,14 +388,19 @@ Usage tips:
 
     async def execute(
         self,
-        operation: str,
-        token: str | None = None,
-        space_id: str | None = None,
-        title: str | None = None,
-        content: str | None = None,
-        **kwargs: Any
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
     ) -> str:
         """Execute the requested operation."""
+        operation = kwargs.get("operation", "")
+        token = kwargs.get("token")
+        space_id = kwargs.get("space_id")
+        title = kwargs.get("title")
+        doc_content = kwargs.get("content")
+
         try:
             client = self._ensure_client()
         except RuntimeError as e:
@@ -405,9 +410,9 @@ Usage tips:
             if operation == "read_document":
                 return await self._read_document(client, token)
             elif operation == "create_document":
-                return await self._create_document(client, space_id, title, content)
+                return await self._create_document(client, space_id, title, doc_content or content)
             elif operation == "update_document":
-                return await self._update_document(client, token, content)
+                return await self._update_document(client, token, doc_content or content)
             elif operation == "create_sheet":
                 return await self._create_sheet(client, space_id, title)
             elif operation == "get_sheet_info":
@@ -448,7 +453,10 @@ Usage tips:
                 "token": token,
                 "content": content or "[Empty document]",
             }
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps({
+                "content": json.dumps(result, ensure_ascii=False),
+                "media": []
+            })
 
         except Exception as e:
             logger.error("Error reading document {}: {}", token, e)
@@ -542,7 +550,10 @@ Usage tips:
                 "token": new_token,
                 "url": f"https://feishu.cn/document/{new_token}",
             }
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps({
+                "content": json.dumps(result, ensure_ascii=False),
+                "media": []
+            })
 
         except Exception as e:
             logger.error("Error creating document: {}", e)
@@ -607,7 +618,10 @@ Usage tips:
                 "token": token,
                 "message": f"Successfully added {len(children)} line(s) to document",
             }
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps({
+                "content": json.dumps(result, ensure_ascii=False),
+                "media": []
+            })
 
         except Exception as e:
             logger.error("Error updating document {}: {}", token, e)
@@ -645,7 +659,10 @@ Usage tips:
                 "token": token,
                 "url": f"https://feishu.cn/spreadsheet/{token}",
             }
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps({
+                "content": json.dumps(result, ensure_ascii=False),
+                "media": []
+            })
 
         except Exception as e:
             logger.error("Error creating spreadsheet: {}", e)
@@ -685,7 +702,10 @@ Usage tips:
                 "title": title,
                 "sheets": sheets,
             }
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps({
+                "content": json.dumps(result, ensure_ascii=False),
+                "media": []
+            })
 
         except Exception as e:
             logger.error("Error getting sheet info {}: {}", token, e)

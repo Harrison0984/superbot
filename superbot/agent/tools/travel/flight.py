@@ -11,7 +11,6 @@ from superbot.agent.tools.travel.shared import get_shared_browser
 from superbot.agent.tools.travel.ctrip import ctrip_monitor
 from superbot.agent.tools.travel.session import get_session_manager, verify_login
 from superbot.agent.tools.travel.logger import get_logger
-from superbot.bus.events import ToolEvent
 
 logger = get_logger(__name__)
 
@@ -22,7 +21,6 @@ class FlightTool(Tool):
     # 配置
     WAIT_TIMEOUT = 300  # 5分钟
     POLL_INTERVAL = 5   # 5秒
-    PROGRESS_INTERVAL = 30  # 30秒
 
     @property
     def name(self) -> str:
@@ -59,9 +57,18 @@ class FlightTool(Tool):
     async def _get_browser(self):
         return await get_shared_browser()
 
-    async def execute(self, from_city: str, to_city: str, date: str, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
         """Execute flight search."""
-        session_key = kwargs.get("_session_key", "cli:direct")
+        from_city = kwargs.get("from_city", "")
+        to_city = kwargs.get("to_city", "")
+        date = kwargs.get("date", "")
         task_id = str(uuid.uuid4())
 
         try:
@@ -106,23 +113,16 @@ class FlightTool(Tool):
                     success, qr_path = False, None
 
                 if success:
-                    # 发送 waiting 事件（带二维码）
-                    self._emit_event(ToolEvent(
-                        session_key=session_key,
-                        task_id=task_id,
-                        tool_name="flight_search",
-                        event_type="waiting",
-                        content="请扫码登录，后台任务正在等待...",
-                        media=[str(qr_path)]
-                    ))
-
                     # 启动后台任务
                     asyncio.create_task(
-                        self._wait_for_login_and_search(task_id, session_key, from_city, to_city, date, page)
+                        self._wait_for_login_and_search(from_city, to_city, date, page)
                     )
 
                     # 立即返回
-                    return json.dumps({"_tool_background": True, "task_id": task_id})
+                    return json.dumps({
+                        "content": "请扫码登录，登录后自动开始搜索",
+                        "media": [str(qr_path)] if qr_path else []
+                    })
                 else:
                     return tool_error("qr_generation_failed", "生成登录二维码失败，请重试")
 
@@ -135,16 +135,12 @@ class FlightTool(Tool):
 
     async def _wait_for_login_and_search(
         self,
-        task_id: str,
-        session_key: str,
         from_city: str,
         to_city: str,
         date: str,
         page
     ):
         """后台等待登录并搜索"""
-        last_progress = 0
-
         async def _check_login_popup(page: Page) -> bool:
             """检查是否有登录弹窗/二维码（未登录）"""
             # 先尝试点击登录按钮，让弹窗显示出来
@@ -255,18 +251,7 @@ class FlightTool(Tool):
 
         for elapsed in range(0, self.WAIT_TIMEOUT, self.POLL_INTERVAL):
             await asyncio.sleep(self.POLL_INTERVAL)
-
-            # 定时发送 progress
-            if elapsed - last_progress >= self.PROGRESS_INTERVAL:
-                self._emit_event(ToolEvent(
-                    session_key=session_key,
-                    task_id=task_id,
-                    tool_name="flight_search",
-                    event_type="progress",
-                    content=f"等待扫码中... ({elapsed // 60}分)"
-                ))
-                last_progress = elapsed
-
+            
             # 检查登录状态
             try:
                 is_logged_in, status = await check_login_status(page)
@@ -280,35 +265,18 @@ class FlightTool(Tool):
                         search_url = f"https://flights.ctrip.com/online/listonline/list/oneway-{from_city}-{to_city}?depdate={date}"
                         await page.goto(search_url)
                         await page.wait_for_load_state("networkidle")
-                        await asyncio.sleep(2)
-
-                    # 验证是否真正登录成功
-                    await asyncio.sleep(2)  # 等待页面过渡
 
                     # 保存cookie并搜索
-                    logger.info("扫码成功，开始搜索...")
                     await self.session.save_cookies(page.context)
                     result = await self._do_search(from_city, to_city, date, page)
-                    self._emit_event(ToolEvent(
-                        session_key=session_key,
-                        task_id=task_id,
-                        tool_name="flight_search",
-                        event_type="complete",
-                        content=result
-                    ))
+                    self.send_message(content=result, to="llm")
                     return
             except Exception as e:
                 logger.warning("检查登录状态失败: %s", e)
 
         # 超时
         await page.close()
-        self._emit_event(ToolEvent(
-            session_key=session_key,
-            task_id=task_id,
-            tool_name="flight_search",
-            event_type="error",
-            content="扫码超时，请重试"
-        ))
+        self.send_message(content="扫码超时，请重试", to="")
 
     async def _do_search(self, from_city: str, to_city: str, date: str, page) -> str:
         """执行航班搜索"""
@@ -324,7 +292,10 @@ class FlightTool(Tool):
             )
 
             if result:
-                return json.dumps(result, ensure_ascii=False, indent=2)
+                return json.dumps({
+                    "content": json.dumps(result, ensure_ascii=False),
+                    "media": []
+                })
             else:
                 return tool_error("no_results", f"未找到航班: {from_city} -> {to_city}, {date}")
 

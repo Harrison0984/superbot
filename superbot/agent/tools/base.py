@@ -5,7 +5,6 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-from superbot.bus.events import ToolEvent
 from superbot.bus.queue import MessageBus
 
 
@@ -31,13 +30,13 @@ def tool_error(
     error = {
         "type": error_type,
         "message": message,
-        "feedback_to": feedback_to,
     }
-    if media:
-        error["media"] = media
-    error.update(extra)
-    return json.dumps({"_tool_error": error}, ensure_ascii=False)
-
+    if extra:
+        error.update(extra)
+    return json.dumps({
+        "content": json.dumps(error, ensure_ascii=False),
+        "media": media or []
+    })
 
 class Tool(ABC):
     """
@@ -62,10 +61,24 @@ class Tool(ABC):
         """依赖注入消息总线"""
         self._bus = bus
 
-    def _emit_event(self, event: ToolEvent) -> None:
-        """发送工具事件到总线"""
+    def initialize(self, bus: "MessageBus") -> None:
+        """Initialize tool with message bus. Called automatically when registered."""
+        self.set_bus(bus)
+        self._bus = bus
+
+    def send_message(self, content: str, channel: str = "", chat_id: str = "",
+                     media: list[str] | None = None, to: str = "") -> None:
+        """Send message to bus (broadcast to all channels if to is empty)."""
         if self._bus:
-            asyncio.create_task(self._bus.tool_events.put(event))
+            from superbot.bus.events import OutboundMessage
+            msg = OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=content,
+                to=to,
+                media=media or [],
+            )
+            asyncio.create_task(self._bus.publish_outbound(msg))
 
     @property
     @abstractmethod
@@ -83,14 +96,30 @@ class Tool(ABC):
     @abstractmethod
     def parameters(self) -> dict[str, Any]:
         """JSON Schema for tool parameters."""
+
+    @property
+    def input_param(self) -> str:
+        """The parameter name for the main input. Defaults to 'prompt'."""
+        return "prompt"
         pass
 
     @abstractmethod
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
         """
         Execute the tool with given parameters.
 
         Args:
+            channel: The channel the message came from (e.g., "feishu", "cli")
+            sender_id: The sender's identifier
+            chat_id: The chat/channel identifier
+            content: The main input content for the tool
             **kwargs: Tool-specific parameters.
 
         Returns:

@@ -6,7 +6,6 @@ import asyncio
 import json
 import re
 import time
-import weakref
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +17,6 @@ from superbot.agent.context import ContextBuilder
 from superbot.agent.subagent import SubagentManager
 from superbot.agent.tools.cron import CronTool
 from superbot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from superbot.agent.tools.message import MessageTool
 from superbot.agent.tools.registry import ToolRegistry
 from superbot.agent.tools.shell import ExecTool
 from superbot.agent.tools.spawn import SpawnTool
@@ -26,10 +24,11 @@ from superbot.agent.tools.web import WebFetchTool, WebSearchTool
 from superbot.agent.tools.travel.flight import FlightTool
 from superbot.agent.tools.travel.hotel import HotelTool
 from superbot.agent.tools.feishu_doc import FeishuDocTool
-from superbot.bus.events import InboundMessage, OutboundMessage, ToolEvent
+from superbot.agent.tools.email import EmailTool
+from superbot.bus.events import InboundMessage, OutboundMessage
 from superbot.bus.queue import MessageBus
 from superbot.providers.base import LLMProvider
-from superbot.session.manager import Session, SessionManager
+from superbot.session.manager import SessionManager
 
 if TYPE_CHECKING:
     from superbot.agent.idle_task import IdleTask
@@ -75,9 +74,6 @@ class AgentLoop:
         embedding_config: Any = None,
     ):
         from superbot.config.schema import ExecToolConfig, ProxyConfig, WebToolsConfig
-        # Vector memory system handles all context retrieval, no sliding window needed
-        # Session cleanup threshold from embedding config
-        self._session_cleanup_threshold = embedding_config.session_cleanup_threshold if embedding_config else 10
         self.bus = bus
         self.channels_config = channels_config
         self.memory_provider = memory_provider
@@ -96,9 +92,18 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
+        # 获取需要 build_messages 的 channels（从配置中动态获取）
+        self._channels_with_memory: set[str] = {"cli"}
+        if channels_config:
+            for name in ("feishu", "telegram", "whatsapp", "qq"):
+                config = getattr(channels_config, name, None)
+                if config and getattr(config, "enabled", False):
+                    self._channels_with_memory.add(name)
+
         self.context = ContextBuilder(workspace, memory_system=memory_system)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        self.tools.set_bus(bus)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -119,9 +124,6 @@ class AgentLoop:
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
         self._mcp_connecting = False
-        self._consolidating: set[str] = set()  # Session keys with consolidation in progress
-        self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
-        self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
 
@@ -132,31 +134,6 @@ class AgentLoop:
         self._last_task_end_time: float | None = None  # 上一个任务结束时间
         self._idle_check_interval = 60  # 空闲检查间隔（秒）
         self._idle_threshold = DEFAULT_IDLE_THRESHOLD  # 默认空闲阈值（秒）
-
-        # Initialize Claude MCP client if enabled
-        self._claude_mcp = None
-        self._claude_channel = None  # Reusable ClaudeChannel instance
-        if channels_config and getattr(channels_config, "claude", None):
-            claude_config = channels_config.claude
-            if claude_config.enabled:
-                from superbot.channels.claude_mcp import ClaudeMCPClient
-                from superbot.channels.claude_channel import ClaudeChannel
-                self._claude_mcp = ClaudeMCPClient(
-                    workdir=claude_config.workdir,
-                    script_path=claude_config.script_path,
-                    auto_start=claude_config.auto_start,
-                    retry_count=claude_config.retry_count,
-                    retry_delay=claude_config.retry_delay,
-                    retry_backoff=claude_config.retry_backoff,
-                )
-                # Create reusable ClaudeChannel instance
-                self._claude_channel = ClaudeChannel(
-                    config=None,
-                    channels={},
-                    mcp_client=self._claude_mcp,
-                    bus=self.bus,
-                )
-                logger.info("Claude MCP client initialized: workdir={}, script={}", claude_config.workdir, claude_config.script_path)
 
         self._register_default_tools()
 
@@ -185,8 +162,18 @@ class AgentLoop:
 
         self.tools.register(HotelTool())
         self.tools.get("hotel_search").set_bus(self.bus)
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(FeishuDocTool(config=self.channels_config.feishu if self.channels_config else None))
+
+        # Register Claude tool (invoked via @claude)
+        claude_config = getattr(self.channels_config, 'claude', None) if self.channels_config else None
+        if claude_config and claude_config.enabled:
+            from superbot.agent.tools.claude import ClaudeTool
+            self.tools.register(ClaudeTool(config=claude_config))
+
+        self._email_tool: EmailTool | None = None
+        if self.channels_config and hasattr(self.channels_config, 'email') and self.channels_config.email:
+            self._email_tool = EmailTool(config=self.channels_config.email, proxy_config=self.proxy_config)
+            self.tools.register(self._email_tool)
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
@@ -275,41 +262,78 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
-    @staticmethod
-    def _check_user_error(result: str) -> dict | None:
-        """Check if tool result requires user interaction.
+    def _parse_at_tool(self, content: str) -> tuple[str, str] | None:
+        """Parse @tool_name pattern from message content.
 
         Returns:
-            dict with keys: message, media (optional), type, trace (optional)
-            Or None if no user interaction required.
+            (tool_name, remaining_content) if @tool detected, None otherwise
         """
-        try:
-            data = json.loads(result)
-            if isinstance(data, dict) and "_tool_error" in data:
-                error = data["_tool_error"]
-                if error.get("feedback_to") == "user":
-                    return {
-                        "type": error.get("type"),
-                        "message": error.get("message", ""),
-                        "media": error.get("media", []),
-                        "trace": error.get("trace", "")
-                    }
-        except (json.JSONDecodeError, TypeError):
-            pass
+        match = re.match(r"@(\w+)\s+(.+)", content, re.DOTALL)
+        if match:
+            tool_name = match.group(1).strip()
+            remaining = match.group(2).strip()
+            return tool_name, remaining
         return None
+
+    async def _handle_at_tool(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Handle @tool_name direct tool invocation."""
+        result = self._parse_at_tool(msg.content)
+        if not result:
+            return None
+
+        tool_name, tool_input = result
+
+        # Check if tool exists
+        tool = self.tools.get(tool_name)
+        if not tool:
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"Tool '{tool_name}' not found. Available tools: {', '.join(self.tools.tool_names)}",
+                to=msg.to,
+            )
+
+        try:
+            # Prepare parameters
+            params = {"media": msg.media} if msg.media else {}
+
+            # Execute tool
+            result = await tool.execute(
+                msg.channel,
+                msg.sender_id,
+                msg.chat_id,
+                tool_input,
+                **params
+            )
+
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=result,
+                to=msg.to,
+            )
+        except Exception as e:
+            logger.error("Error executing @tool: {}", e)
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"Error executing {tool_name}: {str(e)}",
+                to=msg.channel,
+            )
 
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
-        session_key: str,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
         on_progress: Callable[..., Awaitable[None]] | None = None,
-    ) -> tuple[str | None, list[str], list[dict], list[str]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages, user_media)."""
+    ) -> tuple[str | None, list[str]]:
+        """Run the agent iteration loop. Returns (final_content, user_media)."""
         # All context comes from vector memory system via system prompt
         messages = initial_messages
         iteration = 0
         final_content = None
-        tools_used: list[str] = []
         user_media: list[str] = []  # Media files to send to user
 
         while iteration < self.max_iterations:
@@ -361,42 +385,30 @@ class AgentLoop:
                 )
 
                 for tool_call in response.tool_calls:
-                    tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    # 在 tool_call.arguments 复制一份，添加 session_key
                     args = dict(tool_call.arguments)
-                    args["_session_key"] = session_key
-                    result = await self.tools.execute(tool_call.name, args)
+                    # Extract content from args
+                    content = args.pop("content", "")
+                    result = await self.tools.execute(
+                        tool_call.name, channel, sender_id, chat_id, content, args
+                    )
 
-                    # 检查是否是用户交互错误（需要直接反馈给用户）
-                    user_feedback = self._check_user_error(result)
-                    if user_feedback:
-                        # 直接返回给用户，包含消息和媒体
-                        logger.info("Tool requires user interaction: {}", user_feedback["message"])
-                        # 将工具结果添加到消息历史（不打断循环）
-                        messages = self.context.add_tool_result(
-                            messages, tool_call.id, tool_call.name, result
-                        )
-                        # 返回用户反馈内容作为最终回复
-                        media = user_feedback.get("media", [])
-                        return user_feedback["message"], tools_used, messages, media
-
-                    # 检查是否是后台任务（工具正在等待用户交互）
+                    # 解析工具返回值，全部交给 LLM 处理
                     try:
                         result_data = json.loads(result)
-                        if isinstance(result_data, dict) and result_data.get("_tool_background"):
-                            # 后台任务正在运行，需要添加工具结果到消息历史
-                            logger.info("Tool {} running in background", tool_call.name)
-                            messages = self.context.add_tool_result(
-                                messages, tool_call.id, tool_call.name, result
-                            )
-                            return "正在处理中，请稍候...", tools_used, messages, []
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                        tool_content = result_data.get("content", result)
+                        tool_media = result_data.get("media", [])
+                    except (json.JSONDecodeError, AttributeError):
+                        tool_content = result
+                        tool_media = []
 
+                    # 添加工具返回的媒体文件
+                    user_media.extend(tool_media)
+
+                    # 交给 LLM 处理
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                        messages, tool_call.id, tool_call.name, tool_content
                     )
             else:
                 clean = self._strip_think(response.content)
@@ -420,20 +432,18 @@ class AgentLoop:
                 "without completing the task. You can try breaking the task into smaller steps."
             )
 
-        return final_content, tools_used, messages, user_media
+        return final_content, user_media
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
-        logger.info("Agent loop started")
 
         while self._running:
             try:
-                # 同时监听 inbound、tool_events 和 idle_timer
+                # 同时监听 inbound 和 idle_timer
                 tasks = [
                     asyncio.create_task(self.bus.consume_inbound()),
-                    asyncio.create_task(self.bus.tool_events.get()),
                     asyncio.create_task(self._idle_timer()),
                 ]
                 done, pending = await asyncio.wait(
@@ -451,10 +461,7 @@ class AgentLoop:
                     except asyncio.CancelledError:
                         continue
 
-                    if isinstance(result, ToolEvent):
-                        # 处理工具事件
-                        asyncio.create_task(self._handle_tool_event(result))
-                    elif result is None:
+                    if result is None:
                         # idle_timer 触发，检查空闲任务
                         await self._check_and_run_idle_tasks()
                     else:
@@ -541,84 +548,8 @@ class AgentLoop:
         total = cancelled + sub_cancelled
         content = f"⏹ Stopped {total} task(s)." if total else "No active task to stop."
         await self.bus.publish_outbound(OutboundMessage(
-            channel=msg.channel, chat_id=msg.chat_id, content=content,
+            channel=msg.channel, chat_id=msg.chat_id, content=content, to=msg.channel,
         ))
-
-    async def _handle_tool_event(self, event: ToolEvent) -> None:
-        """Handle tool events from background tasks."""
-        if event.event_type == "waiting":
-            # 发送等待消息给用户，包含二维码
-            logger.info("Tool {} waiting: {}", event.tool_name, event.content)
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=event.session_key.split(":")[0] if ":" in event.session_key else "feishu",
-                chat_id=event.session_key.split(":")[1] if ":" in event.session_key else event.session_key,
-                content=event.content,
-                media=event.media
-            ))
-
-        elif event.event_type == "progress":
-            # 附加到会话 metadata，不单独发消息给用户
-            session = self.sessions.get_or_create(event.session_key)
-            session.metadata.setdefault("_tool_progress", {})[event.task_id] = {
-                "tool": event.tool_name,
-                "message": event.content,
-                "timestamp": datetime.now().isoformat()
-            }
-            logger.debug("Tool progress: {} - {}", event.tool_name, event.content)
-
-        elif event.event_type in ("complete", "error"):
-            # 直接处理工具结果，而不是通过 bus
-            logger.info("Tool {} event: {}", event.event_type, event.tool_name)
-            await self._handle_tool_result(event)
-
-    async def _handle_tool_result(self, event: ToolEvent) -> None:
-        """Handle tool result and continue conversation with LLM."""
-        # 解析 session_key 获取 channel 和 chat_id
-        parts = event.session_key.split(":", 1) if ":" in event.session_key else ("cli", event.session_key)
-        channel, chat_id = parts[0], parts[1] if len(parts) > 1 else event.session_key
-
-        try:
-            # 获取会话
-            session = self.sessions.get_or_create(event.session_key)
-
-            # 添加工具结果到会话
-            session.add_message(
-                role="system",
-                content=f"[{event.tool_name}]: {event.content}"
-            )
-
-            # 向量记忆系统提供所有上下文，不需要session历史
-            messages = self.context.build_messages(
-                history=[],
-                current_message=f"工具 {event.tool_name} 已完成: {event.content}",
-                channel=channel,
-                chat_id=chat_id,
-            )
-
-            # 设置工具上下文
-            self._set_tool_context(channel, chat_id)
-
-            # 运行 agent 获取回复
-            final_content, _, all_msgs, _ = await self._run_agent_loop(messages, event.session_key)
-
-            # 保存新消息（跳过已存在的历史消息）
-            self._save_turn(session, all_msgs, len(history))
-            self.sessions.save(session)
-
-            # 发送回复给用户
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=channel,
-                chat_id=chat_id,
-                content=final_content or "任务已完成"
-            ))
-        except Exception as e:
-            logger.error("Error handling tool result: %s", e)
-            # 发送错误消息给用户
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=channel,
-                chat_id=chat_id,
-                content=f"处理工具结果时出错: {str(e)}"
-            ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
@@ -630,7 +561,7 @@ class AgentLoop:
                 elif msg.channel == "cli":
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
-                        content="", metadata=msg.metadata or {},
+                        content="", metadata=msg.metadata or {}, to=msg.channel,
                     ))
             except asyncio.CancelledError:
                 logger.info("Task cancelled for session {}", msg.session_key)
@@ -639,7 +570,7 @@ class AgentLoop:
                 logger.exception("Error processing message for session {}", msg.session_key)
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
-                    content="Sorry, I encountered an error.",
+                    content="Sorry, I encountered an error.", to=msg.to,
                 ))
             finally:
                 # 记录任务结束时间，用于计算空闲时长
@@ -657,6 +588,9 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
+        # Stop Email IMAP polling
+        if self._email_tool:
+            self._email_tool.stop_polling()
         logger.info("Agent loop stopping")
 
     async def _process_message(
@@ -667,6 +601,7 @@ class AgentLoop:
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
+        # System messages (from subagent) should skip memory retrieval
         if msg.channel == "system":
             channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
                                 else ("cli", msg.chat_id))
@@ -674,53 +609,25 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
-            # 获取最近3条消息作为滑动窗口，向量记忆处理更早的内容
-            # 向量记忆系统提供所有上下文，不需要session历史
-            messages = self.context.build_messages(
-                history=[],
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+            # Build messages WITHOUT memory for system messages (subagent results)
+            runtime_ctx = self.context._build_runtime_context(channel, chat_id)
+            messages = [
+                {"role": "system", "content": self.context._get_identity(channel=channel)},
+                {"role": "user", "content": f"{runtime_ctx}\n\n{msg.content}"},
+            ]
+            final_content, user_media = await self._run_agent_loop(
+                messages, channel, msg.sender_id, chat_id
             )
-            final_content, _, all_msgs, _ = await self._run_agent_loop(messages, key)
-            self._save_turn(session, all_msgs, 0)
-            self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
-                                  content=final_content or "Background task completed.")
+                                  content=final_content or "Background task completed.", to=msg.to, media=user_media)
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        # Check for @claude request
-        if self._claude_mcp:
-            from superbot.channels.claude_channel import ClaudeChannel
-            prompt = ClaudeChannel.detect_claude_request(msg.content)
-            if prompt:
-                logger.info("Detected @claude request: {}", prompt[:50])
-                # Ensure MCP is available
-                if await self._claude_mcp.ensure_available():
-                    # Get feishu config if available
-                    feishu_config = None
-                    if self.channels_config:
-                        feishu_config = getattr(self.channels_config, "feishu", None)
-
-                    # Use reusable ClaudeChannel instance for preprocessing
-                    processed_prompt = await self._claude_channel.preprocess_content(
-                        prompt, msg.media, feishu_config
-                    )
-                    # Call Claude MCP
-                    try:
-                        result = await self._claude_mcp.call(processed_prompt)
-                        logger.info("Claude MCP response: {}", result[:100] if result else "empty")
-                        # Return result to original channel
-                        return OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=result or "No response from Claude",
-                        )
-                    except Exception as e:
-                        logger.error("Claude MCP call failed: {}", e)
-                        # Fall through to normal LLM processing
-                else:
-                    logger.warning("Claude MCP unavailable after retry, falling back to default LLM")
+        # Check for @tool_name direct invocation
+        at_result = await self._handle_at_tool(msg)
+        if at_result:
+            return at_result
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
@@ -728,189 +635,64 @@ class AgentLoop:
         # Slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
-            self._consolidating.add(session.key)
-            try:
-                async with lock:
-                    snapshot = session.messages[session.last_consolidated:]
-                    if snapshot:
-                        temp = Session(key=session.key)
-                        temp.messages = list(snapshot)
-                        if not await self._consolidate_memory(temp, archive_all=True):
-                            return OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content="Memory archival failed, session not cleared. Please try again.",
-                            )
-            except Exception:
-                logger.exception("/new archival failed for {}", session.key)
-                return OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content="Memory archival failed, session not cleared. Please try again.",
-                )
-            finally:
-                self._consolidating.discard(session.key)
-
+            # Messages are already stored to vector memory in real-time, just clear session
             session.clear()
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="New session started.")
+                                  content="New session started.", to=msg.to)
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 superbot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
-
-        unconsolidated = len(session.messages) - session.last_consolidated
-        # Vector memory stores in real-time, no consolidation needed
-        # Keep a small threshold just to clean up old messages from session
-        if (unconsolidated >= self._session_cleanup_threshold and session.key not in self._consolidating):
-            self._consolidating.add(session.key)
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
-
-            async def _consolidate_and_unlock():
-                try:
-                    async with lock:
-                        await self._consolidate_memory(session)
-                finally:
-                    self._consolidating.discard(session.key)
-                    _task = asyncio.current_task()
-                    if _task is not None:
-                        self._consolidation_tasks.discard(_task)
-
-            _task = asyncio.create_task(_consolidate_and_unlock())
-            self._consolidation_tasks.add(_task)
+                                  content="🐈 superbot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands", to=msg.to)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
-        if message_tool := self.tools.get("message"):
-            if isinstance(message_tool, MessageTool):
-                message_tool.start_turn()
 
-        # 向量记忆系统提供所有上下文，不需要session历史
-        initial_messages = self.context.build_messages(
-            history=[],
-            current_message=msg.content,
-            media=msg.media if msg.media else None,
-            channel=msg.channel, chat_id=msg.chat_id,
-        )
+        # 只有来自 channel 或 CLI 的消息才执行 build_messages
+        # email 是转发源，不需要 build_messages
+        if msg.channel in self._channels_with_memory:
+            initial_messages = self.context.build_messages(
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel, chat_id=msg.chat_id,
+            )
+        else:
+            initial_messages = [
+                {"role": "system", "content": self.context._get_identity(channel=msg.channel)},
+                {"role": "user", "content": msg.content},
+            ]
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
             meta["_tool_hint"] = tool_hint
             await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
+                channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta, to=msg.to,
             ))
 
-        final_content, _, all_msgs, user_media = await self._run_agent_loop(
-            initial_messages, key, on_progress=on_progress or _bus_progress,
+        final_content, user_media = await self._run_agent_loop(
+            initial_messages, msg.channel, msg.sender_id, msg.chat_id,
+            on_progress=on_progress or _bus_progress,
         )
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
         # Store to vector memory in real-time if enabled
-        if self.memory_system is not None:
+        # 只有来自 channel 或 CLI 的消息才存储记忆
+        if self.memory_system is not None and msg.channel in self._channels_with_memory:
             try:
                 # Store user message
                 self.memory_system.remember(f"[USER] {msg.content}")
-                # Store assistant response
-                if final_content:
-                    self.memory_system.remember(f"[ASSISTANT] {final_content}")
+                self.memory_system.remember(f"[ASSISTANT] {final_content}")
             except Exception as e:
                 logger.error("Error storing to real-time memory: {}", e)
-
-        # 保存消息到session（不再跳过，由向量记忆处理历史）
-        self._save_turn(session, all_msgs, 0)
-        self.sessions.save(session)
-
-        # Note: Even if message tool was used to send a message, we should still
-        # return the LLM's text response to the user (for channels like Feishu)
-        # The message tool sends to a specific target, while this returns the full response
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
-            media=user_media, metadata=msg.metadata or {},
+            media=user_media, metadata=msg.metadata or {}, to=msg.to,
         )
-
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results.
-
-        All messages are kept in memory for the current conversation (including tool
-        results). Tool messages are filtered out only when persisting to disk.
-        """
-        from datetime import datetime
-
-        for m in messages[skip:]:
-            entry = dict(m)
-            role, content = entry.get("role"), entry.get("content")
-
-            if role == "assistant" and not content and not entry.get("tool_calls"):
-                continue  # skip empty assistant messages — they poison session context
-            if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
-                entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
-            elif role == "user":
-                if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
-                    # Strip the runtime-context prefix, keep only the user text.
-                    parts = content.split("\n\n", 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        entry["content"] = parts[1]
-                    else:
-                        continue
-                if isinstance(content, list):
-                    filtered = []
-                    for c in content:
-                        if c.get("type") == "text" and isinstance(c.get("text"), str) and c["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
-                            continue  # Strip runtime context from multimodal messages
-                        if (c.get("type") == "image_url"
-                                and c.get("image_url", {}).get("url", "").startswith("data:image/")):
-                            filtered.append({"type": "text", "text": "[image]"})
-                        else:
-                            filtered.append(c)
-                    if not filtered:
-                        continue
-                    entry["content"] = filtered
-            entry.setdefault("timestamp", datetime.now().isoformat())
-            session.messages.append(entry)
-        session.updated_at = datetime.now()
-
-    async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
-        """Store messages to vector-based memory system in real-time.
-
-        If memory_system is available, use real-time memory storage instead of batch consolidation.
-        """
-        # Use vector-based memory system if available
-        if self.memory_system is not None:
-            try:
-                # Store recent messages to vector memory
-                start_idx = session.last_consolidated if not archive_all else 0
-                messages_to_store = session.messages[start_idx:]
-
-                for msg in messages_to_store:
-                    content = msg.get("content", "")
-                    role = msg.get("role", "")
-                    # Only store user and assistant messages (not tool results)
-                    if role in ("user", "assistant") and content:
-                        # Extract meaningful content for memory
-                        memory_text = f"[{role.upper()}] {content}"
-                        self.memory_system.remember(memory_text)
-
-                # Update consolidation index - keep minimal messages since vector memory handles storage
-                if archive_all:
-                    session.messages = []
-                    session.last_consolidated = 0
-                else:
-                    keep_count = 0  # Vector memory handles all, no need to keep in session
-                    session.last_consolidated = len(session.messages)
-
-                return True
-            except Exception as e:
-                logger.error("Error storing to vector memory: {}", e)
-                return False
-
-        # No fallback - vector memory is required
-        logger.warning("Vector memory system not available")
-        return False
 
     async def process_direct(
         self,
@@ -922,6 +704,6 @@ class AgentLoop:
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
-        msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
+        msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content, to=channel)
         response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
         return response.content if response else ""

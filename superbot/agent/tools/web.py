@@ -48,14 +48,14 @@ def _validate_url(url: str) -> tuple[bool, str]:
 
 
 class ProxyResolver:
-    """Mixin to resolve proxy from config, same as EmailChannel."""
+    """Mixin to resolve proxy from config."""
 
     config: "WebToolsConfig | None"
     proxy_config: "ProxyConfig"
 
     @property
     def proxy(self) -> str | None:
-        """Resolve proxy from config, same as EmailChannel."""
+        """Resolve proxy from config."""
         if self.config and self.config.use_proxy and self.proxy_config.enabled:
             return self.proxy_config.socks_proxy or self.proxy_config.https_proxy or self.proxy_config.http_proxy
         return None
@@ -93,7 +93,16 @@ class WebSearchTool(Tool, ProxyResolver):
         """Resolve API key at call time so env/config changes are picked up."""
         return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
 
-    async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
+        query = kwargs.get("query", content)
+        count = kwargs.get("count")
         if not self.api_key:
             return (
                 "Error: Brave Search API key not configured. Set it in "
@@ -157,9 +166,19 @@ class WebFetchTool(Tool, ProxyResolver):
         self.config = config
         self.proxy_config = proxy_config or ProxyConfig()
 
-    async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
         from readability import Document
 
+        url = kwargs.get("url", content)
+        extractMode = kwargs.get("extractMode", "markdown")
+        maxChars = kwargs.get("maxChars")
         max_chars = maxChars or self.max_chars
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
@@ -191,8 +210,11 @@ class WebFetchTool(Tool, ProxyResolver):
             truncated = len(text) > max_chars
             if truncated: text = text[:max_chars]
 
-            return json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
-                              "extractor": extractor, "truncated": truncated, "length": len(text), "text": text}, ensure_ascii=False)
+            return json.dumps({
+                "content": json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
+                              "extractor": extractor, "truncated": truncated, "length": len(text), "text": text}),
+                "media": []
+            })
         except httpx.ProxyError as e:
             logger.error("WebFetch proxy error for {}: {}", url, e)
             return tool_error("proxy_error", f"Proxy error: {e}", url=url)

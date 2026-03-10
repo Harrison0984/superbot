@@ -135,9 +135,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
     def build_messages(
         self,
-        history: list[dict[str, Any]],
         current_message: str,
-        skill_names: list[str] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
@@ -154,8 +152,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, query=current_message)},
-            *history,
+            {"role": "system", "content": self.build_system_prompt(channel=channel, query=current_message)},
             {"role": "user", "content": merged},
         ]
 

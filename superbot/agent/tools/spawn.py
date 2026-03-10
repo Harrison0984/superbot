@@ -52,12 +52,21 @@ class SpawnTool(Tool):
             "required": ["task"],
         }
 
-    async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        channel: str,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> str:
         """Spawn a subagent to execute the given task."""
+        task = kwargs.get("task", content)
+        label = kwargs.get("label")
         return await self._manager.spawn(
             task=task,
             label=label,
-            origin_channel=self._origin_channel,
-            origin_chat_id=self._origin_chat_id,
-            session_key=self._session_key,
+            origin_channel=channel,
+            origin_chat_id=chat_id,
+            session_key=f"{channel}:{chat_id}",
         )
