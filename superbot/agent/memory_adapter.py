@@ -105,11 +105,12 @@ class MemoryAdapter:
             logger.error("Error getting memory context: {}", e)
             return ""
 
-    def remember(self, text: str) -> bool:
+    def remember(self, text: str, analyze: bool = True) -> bool:
         """Store new memory in real-time.
 
         Args:
             text: Text content to remember.
+            analyze: If True, analyze and extract triples. If False, only save without analysis.
 
         Returns:
             True if successfully stored, False otherwise.
@@ -119,7 +120,7 @@ class MemoryAdapter:
             return False
 
         try:
-            result = self._memory_system.remember(text)
+            result = self._memory_system.remember(text, analyze=analyze)
             if not result:
                 logger.debug("Memory filtered by entropy gatekeeper: {}", text[:50])
             return result

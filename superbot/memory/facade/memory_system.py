@@ -116,18 +116,19 @@ class MemorySystem:
 
     # ==================== 核心接口 ====================
 
-    def remember(self, raw_text: str) -> bool:
+    def remember(self, raw_text: str, analyze: bool = True) -> bool:
         """
         添加记忆
 
         参数:
             raw_text: 原始文本
+            analyze: 是否进行分析（提取三元组）。False 时只存储向量，不调用 LLM
 
         返回:
             是否成功处理
         """
         with self._lock:
-            logger.debug("[Memory] remember() called with text: {}", raw_text[:100])
+            logger.debug("[Memory] remember() called with text: {}, analyze: {}", raw_text[:100], analyze)
 
             # 1. 物理过滤
             if not self.entropy_gatekeeper.should_accept(raw_text):
@@ -145,14 +146,26 @@ class MemorySystem:
                 logger.debug("[Memory] remember() rejected by semantic cache (duplicate): {}", raw_text[:100])
                 return False
 
-            # 4. 加入批量处理缓冲区
-            self.process_buffer.push(raw_text, vector)
-            logger.debug("[Memory] remember() pushed to process_buffer, size: {}", len(self.process_buffer.buffer))
+            # 4. 根据 analyze 参数决定处理方式
+            if analyze:
+                # 完整流程：加入缓冲区并处理（调用 LLM）
+                self.process_buffer.push(raw_text, vector)
+                logger.debug("[Memory] remember() pushed to process_buffer, size: {}", len(self.process_buffer.buffer))
+                self._process_buffer()
+            else:
+                # 快速路径：直接存储向量，不调用 LLM
+                import uuid
+                vector_id = str(uuid.uuid4())
+                metadata = {"tag": "raw", "source": "memory"}
+                self.vector_store.add(
+                    ids=[vector_id],
+                    vectors=[vector.tolist()],
+                    documents=[raw_text],
+                    metadatas=[metadata]
+                )
+                logger.debug("[Memory] remember() stored to vector_store directly (no LLM)")
 
-            # 5. 处理缓冲区
-            self._process_buffer()
-
-            # 6. 更新历史和话题
+            # 5. 更新历史和话题
             self.history.append(raw_text)
             self._track_topic(raw_text)
 
