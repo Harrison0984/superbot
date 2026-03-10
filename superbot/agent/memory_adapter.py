@@ -85,6 +85,17 @@ class MemoryAdapter:
             if understanding:
                 memory_parts.append(f"\n## Context Understanding\n{understanding}")
 
+            # Add relations if available
+            relations = results.get("relations", [])
+            if relations:
+                memory_parts.append("\n## Related Entities")
+                for rel in relations[:5]:  # Limit to 5 most relevant
+                    head = rel.get("head", "")
+                    relation = rel.get("relation", "")
+                    tail = rel.get("tail", "")
+                    if head and relation and tail:
+                        memory_parts.append(f"- {head} → {relation} → {tail}")
+
             if not memory_parts:
                 return ""
 

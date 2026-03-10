@@ -162,12 +162,11 @@ class MemorySystem:
 
         batch_text = [item["text"] for item in batch_items]
 
-        # 调用 LLM 提纯（仅处理有意义的文本，忽略过短的消息）
+        # 调用 LLM 提纯
         llm = self._get_llm()
         extracted = []
         for text in batch_text:
-            # Skip triple extraction for very short messages
-            if llm is not None and len(text) > 50:
+            if llm is not None:
                 try:
                     triples = llm.extract_triples(text)
                     if isinstance(triples, list) and triples:

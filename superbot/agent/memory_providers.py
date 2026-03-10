@@ -179,15 +179,20 @@ class SuperbotLLMAdapter:
         self._default_model = default_model
         self._config = config
 
-    def _calculate_max_input_chars(self, output_tokens: int) -> int:
+    def _calculate_max_input_chars(self, output_tokens: int | None) -> int:
         """Calculate max input characters based on output token limit.
 
         Args:
-            output_tokens: Number of tokens reserved for output.
+            output_tokens: Number of tokens reserved for output. None = no limit.
 
         Returns:
             Maximum input characters.
         """
+        if output_tokens is None:
+            # No output limit, use a reasonable input limit
+            max_tokens = self._config.llm_max_tokens if self._config else 262144
+            chars_per_token = self._config.chars_per_token if self._config else 4
+            return (max_tokens - 200) * chars_per_token
         max_tokens = self._config.llm_max_tokens if self._config else 262144
         chars_per_token = self._config.chars_per_token if self._config else 4
         return (max_tokens - output_tokens - 200) * chars_per_token
@@ -231,6 +236,9 @@ class SuperbotLLMAdapter:
         default_temperature = self._config.llm_temperature if self._config else 0.7
 
         max_tokens = kwargs.get("max_tokens", default_max_tokens)
+        # If max_tokens is explicitly None, use a large value (no limit)
+        if max_tokens is None:
+            max_tokens = 16384  # Very large, effectively no limit
         temperature = kwargs.get("temperature", default_temperature)
 
         # Check if provider has async chat
@@ -265,12 +273,13 @@ class SuperbotLLMAdapter:
         Returns:
             List of triple dictionaries with subject, relation, object keys.
         """
-        default_max_tokens = self._config.triple_max_tokens if self._config else 512
-        max_input_chars = self._calculate_max_input_chars(default_max_tokens)
+        # None = no limit, use provider default
+        max_tokens = None
+        max_input_chars = self._calculate_max_input_chars(max_tokens)
 
         # If text fits in one chunk, process normally
         if len(text) <= max_input_chars:
-            return self._extract_triples_single(text, default_max_tokens)
+            return self._extract_triples_single(text, max_tokens)
 
         # Split into chunks and process each, then merge results
         all_triples = []
@@ -278,13 +287,13 @@ class SuperbotLLMAdapter:
 
         for i in range(0, len(text), chunk_size):
             chunk = text[i:i + chunk_size]
-            triples = self._extract_triples_single(chunk, default_max_tokens)
+            triples = self._extract_triples_single(chunk, max_tokens)
             all_triples.extend(triples)
 
         # Deduplicate by subject-relation-object
         return self._deduplicate_triples(all_triples)
 
-    def _extract_triples_single(self, text: str, max_tokens: int) -> list[dict[str, Any]]:
+    def _extract_triples_single(self, text: str, max_tokens: int | None) -> list[dict[str, Any]]:
         """Extract triples from a single chunk of text."""
         prompt = f"""Extract knowledge triples from the following text.
 Return a JSON array of triples in the format: [{{"subject": "...", "relation": "...", "object": "..."}}]

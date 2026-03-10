@@ -61,7 +61,6 @@ class RelationStore:
                 head TEXT NOT NULL,
                 relation TEXT NOT NULL,
                 tail TEXT NOT NULL,
-                strength REAL DEFAULT 1.0,
                 last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
                 ref_id INTEGER,
                 UNIQUE(head, relation, tail)
@@ -130,7 +129,6 @@ class RelationStore:
         relation: str,
         tail: str,
         ref_id: int = None,
-        strength: float = 1.0
     ) -> None:
         """Add entity relation"""
         conn = self._get_conn()
@@ -138,9 +136,9 @@ class RelationStore:
             cursor = conn.cursor()
             now = datetime.now().isoformat()
             cursor.execute("""
-                INSERT INTO relationships (head, relation, tail, strength, last_seen, ref_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (head, relation, tail, strength, now, ref_id))
+                INSERT INTO relationships (head, relation, tail, last_seen, ref_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (head, relation, tail, now, ref_id))
             conn.commit()
         finally:
             conn.close()
@@ -196,7 +194,7 @@ class RelationStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM relationships
+                SELECT id, head, relation, tail, last_seen, ref_id FROM relationships
                 WHERE head = ? OR tail = ?
             """, (entity, entity))
 
@@ -209,9 +207,8 @@ class RelationStore:
                     "head": row[1],
                     "relation": row[2],
                     "tail": row[3],
-                    "strength": row[4],
-                    "last_seen": row[5],
-                    "ref_id": row[6]
+                    "last_seen": row[4],
+                    "ref_id": row[5]
                 })
 
             return results
@@ -220,10 +217,7 @@ class RelationStore:
 
 
 class EnhancedRelationStore(RelationStore):
-    """Enhanced relation storage with trigger-based decay"""
-
-    # Exponential decay coefficient, half-life ~14 days
-    LAMBDA = 0.05
+    """Enhanced relation storage - simple upsert without strength tracking"""
 
     def upsert_relation(
         self,
@@ -231,75 +225,57 @@ class EnhancedRelationStore(RelationStore):
         relation: str,
         tail: str,
         ref_id: int = None,
-        increment: float = 0.5
     ) -> None:
         """
-        Trigger-based decay upsert operation
-
-        Logic:
-        1. Find existing relation
-        2. If exists: decay old strength first, then add increment
-           S_new = S_old * exp(-λ * days) + increment
-        3. If not exists: create new relation with strength = increment
+        Simple upsert - just update last_seen if exists, insert if not.
+        No strength tracking.
         """
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             now = datetime.now().isoformat()
 
-            # Use trigger-based decay upsert
-            sql = f"""
-                INSERT INTO relationships (head, relation, tail, strength, last_seen, ref_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+            # Simple upsert - just update last_seen
+            sql = """
+                INSERT INTO relationships (head, relation, tail, last_seen, ref_id)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(head, relation, tail) DO UPDATE SET
-                    strength = (
-                        SELECT strength * EXP(-{self.LAMBDA} * (
-                            julianday('now') - julianday(COALESCE(last_seen, created_at))
-                        ))
-                        FROM relationships
-                        WHERE head = excluded.head
-                          AND relation = excluded.relation
-                          AND tail = excluded.tail
-                    ) + ?,
                     last_seen = ?,
                     ref_id = COALESCE(excluded.ref_id, ref_id);
             """
 
             try:
                 cursor.execute(sql, (
-                    head, relation, tail,
-                    increment, now, ref_id,  # INSERT values
-                    increment, now            # UPDATE values
+                    head, relation, tail, now, ref_id,  # INSERT values
+                    now                                    # UPDATE value
                 ))
                 conn.commit()
             except Exception as e:
                 # Fallback to regular insert if UPSERT fails
                 cursor.execute("""
-                    INSERT INTO relationships (head, relation, tail, strength, last_seen, ref_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (head, relation, tail, increment, now, ref_id))
+                    INSERT INTO relationships (head, relation, tail, last_seen, ref_id)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (head, relation, tail, now, ref_id))
                 conn.commit()
         finally:
             conn.close()
 
     def get_entity_relations(self, entity: str) -> List[Dict[str, Any]]:
-        """Get all relations for an entity (with time decay)"""
+        """Get all relations for an entity"""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
 
-            # Use exponential decay to calculate effective strength
+            # Simple query without strength
             sql = """
-                SELECT id, head, relation, tail,
-                       strength * EXP(-? * (julianday('now') - julianday(COALESCE(last_seen, created_at)))) as effective_strength,
-                       last_seen, ref_id
+                SELECT id, head, relation, tail, last_seen, ref_id
                 FROM relationships
                 WHERE head = ? OR tail = ?
-                ORDER BY effective_strength DESC
+                ORDER BY last_seen DESC
                 LIMIT 10;
             """
 
-            cursor.execute(sql, (self.LAMBDA, entity, entity))
+            cursor.execute(sql, (entity, entity))
             rows = cursor.fetchall()
 
             results = []
@@ -309,9 +285,8 @@ class EnhancedRelationStore(RelationStore):
                     "head": row[1],
                     "relation": row[2],
                     "tail": row[3],
-                    "effective_strength": row[4],
-                    "last_seen": row[5],
-                    "ref_id": row[6]
+                    "last_seen": row[4],
+                    "ref_id": row[5]
                 })
 
             return results

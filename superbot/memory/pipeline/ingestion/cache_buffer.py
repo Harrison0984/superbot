@@ -32,7 +32,7 @@ class CacheBuffer:
 
     def push(self, text: str, vector: np.ndarray) -> bool:
         """
-        添加内容到缓冲区
+        添加内容到缓冲区（FIFO 淘汰）
 
         返回:
             True 表示添加成功
@@ -46,6 +46,8 @@ class CacheBuffer:
                     return False  # 语义重复，拒绝添加
 
         text_bytes = len(text.encode('utf-8'))
+
+        # 先添加新内容
         self.buffer.append({
             "text": text,
             "vector": vector,
@@ -53,6 +55,13 @@ class CacheBuffer:
             "timestamp": datetime.now()
         })
         self._total_bytes += text_bytes
+
+        # 如果超过阈值，FIFO 淘汰最旧的内容
+        while (len(self.buffer) > self.buffer_count or
+               self._total_bytes > self.buffer_size) and self.buffer:
+            removed = self.buffer.pop(0)  # 移除最旧的
+            self._total_bytes -= removed["text_bytes"]
+
         return True
 
     def should_process(self) -> bool:
@@ -70,22 +79,16 @@ class CacheBuffer:
         return False
 
     def get_batch(self) -> List[Dict[str, Any]]:
-        """获取批次并清空缓冲区"""
-        batch = self.buffer.copy()
-        self.clear()
-        return batch
+        """获取所有 buffer 内容，不清空"""
+        return self.buffer.copy()
 
     def get_batch_texts(self) -> List[str]:
         """获取批次的文本列表"""
-        texts = [item["text"] for item in self.buffer]
-        self.clear()
-        return texts
+        return [item["text"] for item in self.buffer]
 
     def get_batch_vectors(self) -> List[np.ndarray]:
         """获取批次的向量列表"""
-        vectors = [item["vector"] for item in self.buffer]
-        self.clear()
-        return vectors
+        return [item["vector"] for item in self.buffer]
 
     def clear(self):
         """清空缓冲区"""

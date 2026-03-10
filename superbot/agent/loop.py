@@ -822,8 +822,9 @@ class AgentLoop:
         self._save_turn(session, all_msgs, 0)
         self.sessions.save(session)
 
-        if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
-            return None
+        # Note: Even if message tool was used to send a message, we should still
+        # return the LLM's text response to the user (for channels like Feishu)
+        # The message tool sends to a specific target, while this returns the full response
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
