@@ -331,36 +331,85 @@ class MemorySystem:
             格式化的记忆上下文字符串，如果无结果则返回空字符串
         """
         results = self.recall(query, top_n=top_n)
+        lines = []
 
-        # 构建格式化输出
-        parts = []
-
-        # 添加 facts
+        # 1. 格式化语义关联事实 (Facts)
         facts = results.get("facts", [])
         if facts:
-            parts.append("## Relevant Facts")
-            for fact in facts[:3]:
-                content = fact.get("content", "")
-                if content:
-                    parts.append(f"- {content}")
+            lines.append("【语义关联事实】")
+            tag_tracker = {}  # 记录已出现的 tag，用于标记"最新"和"历史记录"
 
-        # 添加 raw_logs（原始对话）
+            for fact in facts[:5]:
+                content = fact.get("content", "")
+                if not content:
+                    continue
+
+                # 从 metadata 获取 tag
+                metadata = fact.get("metadata", {})
+                tag = metadata.get("tag", "")
+
+                # 状态标记逻辑
+                if tag not in tag_tracker:
+                    status_label = ""  # 最新的一条不打特殊标签
+                    tag_tracker[tag] = 1
+                else:
+                    status_label = "(历史记录)"  # 同一个 Tag 下非第一条标记为历史
+
+                # 提取日期
+                timestamp = fact.get("metadata", {}).get("timestamp", "")
+                date_str = timestamp.split(" ")[0] if timestamp and " " in timestamp else (timestamp[:10] if timestamp else "")
+
+                line = f"- [{date_str}] {tag}{status_label}: {content}"
+                lines.append(line)
+
+        lines.append("")  # 换行分隔
+
+        # 2. 格式化逻辑关系图谱 (Relations)
+        relations = results.get("relations", [])
+        if relations:
+            lines.append("【逻辑关系图谱】")
+            for rel in relations[:5]:
+                head = rel.get("head", "")
+                relation = rel.get("relation", "")
+                tail = rel.get("tail", "")
+                if head and relation and tail:
+                    lines.append(f"- ({head}) --[{relation}]--> ({tail})")
+
+        lines.append("")  # 换行分隔
+
+        # 3. 添加原始对话 (Recent Conversations)
         raw_logs = results.get("raw_logs", [])
         if raw_logs:
-            parts.append("\n## Recent Conversations")
+            lines.append("【最近对话】")
             for log in raw_logs[:3]:
                 content = log.get("content", "")
                 timestamp = log.get("timestamp", "")
                 if content:
-                    ts = f" ({timestamp})" if timestamp else ""
-                    parts.append(f"- {content}{ts}")
+                    # 提取 [USER] 或 [ASSISTANT] 前缀
+                    prefix = ""
+                    if content.startswith("[USER]"):
+                        prefix = "[用户]"
+                        content = content[7:]
+                    elif content.startswith("[ASSISTANT]"):
+                        prefix = "[助手]"
+                        content = content[11:]
 
-        # 添加 LLM 理解（如果存在）
+                    date_str = timestamp.split(" ")[0] if timestamp and " " in timestamp else (timestamp[:10] if timestamp else "")
+
+                    if prefix and date_str:
+                        lines.append(f"- {date_str} {prefix}: {content[:100]}")
+                    elif prefix:
+                        lines.append(f"- {prefix}: {content[:100]}")
+                    else:
+                        lines.append(f"- {content[:100]}")
+
+        # 4. 添加 LLM 理解（如果存在）
         understanding = results.get("understanding")
         if understanding:
-            parts.append(f"\n## Context Summary\n{understanding}")
+            lines.append("")
+            lines.append(f"【上下文总结】\n{understanding}")
 
-        return "\n".join(parts) if parts else ""
+        return "\n".join(lines) if lines else ""
 
     def shutdown(self):
         """关闭系统"""
