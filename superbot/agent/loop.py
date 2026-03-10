@@ -651,7 +651,6 @@ class AgentLoop:
         # email 是转发源，不需要 build_messages
         if msg.channel in self._channels_with_memory:
             initial_messages = self.context.build_messages(
-                history=[],
                 current_message=msg.content,
                 media=msg.media if msg.media else None,
                 channel=msg.channel, chat_id=msg.chat_id,
