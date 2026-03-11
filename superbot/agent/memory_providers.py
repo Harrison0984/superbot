@@ -355,14 +355,15 @@ class SuperbotLLMAdapter:
         return """Extract knowledge triples and generate a concise summary.
 Output format: {{"triples": [{{"subject": "", "relation": "", "object": ""}}], "summary": ""}}
 
-Context shows conversation history with [USER] and [ASSISTANT] roles.
-{context}
 Text: {text}
 
 Rules:
-- Extract ALL triples from the text (one sentence can have multiple facts)
-- Generate a concise summary (max 20 chars) capturing the key info
-- Summary should be useful for semantic search
+- Extract ALL factual triples from the text
+- Split compound sentences by comma or Chinese punctuation
+- For "我是X" or "我叫X", extract triple (我, 是/叫, X)
+- For "你是X", extract triple (你, 是/叫, X)
+- Use Chinese relation words: 是, 叫, 名字, 颜色, 爱好, etc.
+- Generate a concise summary (max 20 chars) for semantic search
 
 Output: {{"triples": [], "summary": ""}}"""
 
