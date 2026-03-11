@@ -466,28 +466,10 @@ class MemorySystem:
         logger.debug("[Memory] recall() called with query: {}, top_n: {}", query_text[:100], top_n)
 
         results = self.retriever.retrieve(query_text, top_n=top_n)
-        logger.debug("[Memory] recall() retrieved {} facts, {} relations",
-                     len(results.get("facts", [])), len(results.get("relations", [])))
+        logger.debug("[Memory] recall() retrieved {} facts, {} relations, {} raw_logs",
+                     len(results.get("facts", [])), len(results.get("relations", [])), len(results.get("raw_logs", [])))
 
-        # 获取原始数据
-        raw_logs = []
-        for fact in results.get("facts", []):
-            memory_node_id = fact.get("id")
-            if memory_node_id:
-                memory_node = self.relation_store.get_memory(memory_node_id)
-                if memory_node and memory_node.get("raw_id"):
-                    raw_log = self.relation_store.get_raw_log(memory_node["raw_id"])
-                    if raw_log:
-                        raw_logs.append({
-                            "memory_node_id": memory_node_id,
-                            "raw_log_id": raw_log["id"],
-                            "content": raw_log["content"],
-                            "source": raw_log.get("source"),
-                            "timestamp": raw_log.get("timestamp")
-                        })
-
-        results["raw_logs"] = raw_logs
-        logger.debug("[Memory] recall() loaded {} raw_logs", len(raw_logs))
+        # raw_logs 已经在 retriever.retrieve() 中获取
 
         llm = self._get_llm()
         if llm is not None and self.history:

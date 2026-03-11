@@ -166,11 +166,21 @@ class EnhancedRetriever:
         relations = self._relation_search(query_entities)
         logger.debug("[Retriever] _relation_search() returned {} relations", len(relations))
 
+        # 8. 获取原始对话 (raw_logs)
+        raw_logs = []
+        if final_ids:
+            # 从 facts 中提取 memory_node_ids
+            memory_node_ids = [f["id"] for f in facts]
+            if memory_node_ids:
+                raw_logs = self._get_raw_logs(memory_node_ids)
+                logger.debug("[Retriever] _get_raw_logs() returned {} logs", len(raw_logs))
+
         result = {
             "facts": facts,
-            "relations": relations
+            "relations": relations,
+            "raw_logs": raw_logs
         }
-        logger.debug("[Retriever] retrieve() returning {} facts, {} relations", len(facts), len(relations))
+        logger.debug("[Retriever] retrieve() returning {} facts, {} relations, {} raw_logs", len(facts), len(relations), len(raw_logs))
         return result
 
     def _get_sql_recall_ranked(self, vector_hits: Dict[str, float]) -> List[str]:
@@ -222,6 +232,65 @@ class EnhancedRetriever:
             conn.close()
 
         return result
+
+    def _get_raw_logs(self, memory_node_ids: List[int]) -> List[Dict[str, Any]]:
+        """从 memory_node_ids 获取原始对话"""
+        if not memory_node_ids:
+            return []
+
+        conn = self.relation_store._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # 查询 memory_nodes 获取 raw_ids
+            placeholders = ','.join(['?' for _ in memory_node_ids])
+            cursor.execute(f"""
+                SELECT id, raw_id, summary, tag
+                FROM memory_nodes
+                WHERE id IN ({placeholders})
+            """, memory_node_ids)
+
+            node_rows = cursor.fetchall()
+            if not node_rows:
+                return []
+
+            # 构建 raw_id -> node info 的映射
+            raw_id_to_node = {}
+            raw_ids = []
+            for row in node_rows:
+                node_id, raw_id, summary, tag = row
+                raw_id_to_node[raw_id] = {"node_id": node_id, "summary": summary, "tag": tag}
+                raw_ids.append(raw_id)
+
+            if not raw_ids:
+                return []
+
+            # 查询 raw_logs 获取原始内容
+            placeholders = ','.join(['?' for _ in raw_ids])
+            cursor.execute(f"""
+                SELECT id, content, timestamp
+                FROM raw_logs
+                WHERE id IN ({placeholders})
+            """, raw_ids)
+
+            log_rows = cursor.fetchall()
+
+            # 构建结果
+            results = []
+            for row in log_rows:
+                raw_id, content, timestamp = row
+                node_info = raw_id_to_node.get(raw_id, {})
+                results.append({
+                    "raw_id": raw_id,
+                    "content": content,
+                    "timestamp": timestamp,
+                    "summary": node_info.get("summary", ""),
+                    "tag": node_info.get("tag", ""),
+                })
+
+            return results
+        finally:
+            conn.close()
 
     def _relation_search(self, query_entities: List[str]) -> List[Dict[str, Any]]:
         """
