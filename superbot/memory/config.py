@@ -8,7 +8,7 @@ class Config(BaseModel):
     # ==================== 物理过滤缓冲区 ====================
     # EntropyGatekeeper 使用，用于过滤低信息量内容
 
-    entropy_buffer_count: int = 100
+    entropy_buffer_count: int = 1
     """
     物理过滤缓冲区数量
 
@@ -39,7 +39,7 @@ class Config(BaseModel):
     # ==================== 语义去重缓冲区 ====================
     # CacheBuffer 使用，用于检测语义重复
 
-    semantic_buffer_count: int = 100
+    semantic_buffer_count: int = 1
     """
     语义去重缓冲区数量
 

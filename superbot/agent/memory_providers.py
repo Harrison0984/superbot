@@ -359,7 +359,9 @@ Conversation: {context}
 Text: {text}
 
 Rules:
-- subject: use "self" for the user (我), "you" for assistant (你)
+- "我" in user message = self, "你" in user message = you
+- "我" in assistant message = you, "你" in assistant message = self
+- For named entities (e.g. "张三"), use the name directly (NOT self/you)
 - Extract factual triples: (subject, relation, object)
 - Add short summary for each triple
 

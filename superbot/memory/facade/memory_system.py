@@ -79,7 +79,8 @@ class MemorySystem:
         self.retriever = EnhancedRetriever(
             self.vector_store,
             self.relation_store,
-            embedding_provider=None
+            embedding_provider=None,
+            llm_provider=None  # 由外部通过 set_embedding 设置
         )
 
         # 对话历史
@@ -100,6 +101,15 @@ class MemorySystem:
         """注入 Embedding provider"""
         self._embedding = provider
         self.retriever.embedding_provider = provider
+        # 如果有 LLM，也设置到 retriever
+        if self._llm:
+            self.retriever.llm_provider = self._llm
+        return self
+
+    def set_llm(self, provider: LLMProvider) -> "MemorySystem":
+        """注入 LLM provider"""
+        self._llm = provider
+        self.retriever.llm_provider = provider
         return self
 
     def _get_llm(self) -> Optional[LLMProvider]:
@@ -414,7 +424,7 @@ class MemorySystem:
                                 tail=tail,
                                 ref_id=memory_node_id
                             )
-                            logger.debug("[Memory] _process_buffer() stored triple: ({}, {}, {})", head, relation, tail)
+                            print(f"[Memory] STORE Triple: ({head}, {relation}, {tail}), Summary: {action}")
 
                 # 存入向量库 (ChromaDB metadata 只支持简单类型)
                 store_metadata = {"tag": tag, "memory_node_id": str(memory_node_id)}
@@ -427,15 +437,28 @@ class MemorySystem:
                         store_metadata["subject"] = first_triple.get("subject", "")
                         store_metadata["relation"] = first_triple.get("relation", "")
                         store_metadata["object"] = first_triple.get("object", "")
+                # 存向量用 raw_text（用于匹配），但文档内容用 action（事实摘要）
+                doc_content = action if action and action != raw_text else raw_text
                 self.vector_store.add(
                     ids=[vector_id],
                     vectors=[original_vector],
-                    documents=[action],
+                    documents=[doc_content],
                     metadatas=[store_metadata]
                 )
                 logger.debug("[Memory] _process_buffer() added vector_store id: {}, action: {}", vector_id, action)
 
         logger.debug("[Memory] _process_buffer() completed for {} items", len(batch_items))
+
+        # Keep only buffer_count items after processing
+        current_count = self.process_buffer.size()
+        keep_count = self.config.process_buffer_count
+        if current_count > keep_count:
+            # Keep only the last keep_count items
+            remaining = self.process_buffer.buffer[-keep_count:]
+            self.process_buffer.buffer = remaining
+            # Recalculate total_bytes
+            self.process_buffer._total_bytes = sum(item["text_bytes"] for item in self.process_buffer.buffer)
+            logger.debug("[Memory] _process_buffer() kept {} items, removed {}", keep_count, current_count - keep_count)
 
     def _build_context(self) -> str:
         """Build conversation context from recent history.
@@ -496,6 +519,17 @@ class MemorySystem:
         logger.debug("[Memory] recall() called with query: {}, top_n: {}", query_text[:100], top_n)
 
         results = self.retriever.retrieve(query_text, top_n=top_n)
+
+        # Print recall results
+        print(f"[Memory] RECALL Query: {query_text}")
+        print(f"[Memory] RECALL Facts: {len(results.get('facts', []))}")
+        for f in results.get('facts', []):
+            meta = f.get('metadata', {})
+            print(f"  - {f.get('content', '')[:50]}, subject: {meta.get('subject', '')}")
+        print(f"[Memory] RECALL Relations: {len(results.get('relations', []))}")
+        for r in results.get('relations', []):
+            print(f"  - ({r.get('head', '')}, {r.get('relation', '')}, {r.get('tail', '')})")
+
         logger.debug("[Memory] recall() retrieved {} facts, {} relations, {} raw_logs",
                      len(results.get("facts", [])), len(results.get("relations", [])), len(results.get("raw_logs", [])))
 

@@ -15,6 +15,7 @@ class EnhancedRetriever:
         vector_store: VectorStore,
         relation_store: EnhancedRelationStore,
         embedding_provider,
+        llm_provider=None,
         w_sim: float = 0.7,
         w_time: float = 0.3,
         alpha: float = 0.05,
@@ -23,6 +24,7 @@ class EnhancedRetriever:
         self.vector_store = vector_store
         self.relation_store = relation_store
         self.embedding_provider = embedding_provider
+        self.llm_provider = llm_provider
         self.w_sim = w_sim
         self.w_time = w_time
         self.alpha = alpha
@@ -36,6 +38,39 @@ class EnhancedRetriever:
                 "Please call set_embedding() on MemorySystem first."
             )
         return self.embedding_provider
+
+    def _extract_query_triples(self, query_text: str) -> List[Dict[str, str]]:
+        """使用 LLM 从查询中提取 subject + relation"""
+        if not self.llm_provider:
+            return []
+
+        prompt = f"""从用户查询中提取要查询的三元组。
+
+查询: {query_text}
+
+规则:
+- 提取 subject 和 relation，object 用 ? 表示
+- 例如 "我喜欢什么？" -> subject: self, relation: likes
+- 例如 "你叫什么？" -> subject: you, relation: name
+- 返回 JSON 数组格式: [{{"subject": "", "relation": ""}}]
+
+只返回JSON:"""
+
+        try:
+            response = self.llm_provider.generate(prompt, max_tokens=50, temperature=0.1)
+            response = response.strip()
+            import json
+            try:
+                result = json.loads(response)
+                if isinstance(result, list):
+                    print(f"[Retriever] LLM extracted query triples: {result}")
+                    return result
+            except json.JSONDecodeError:
+                pass
+        except Exception as e:
+            logger.warning(f"LLM query triple extraction failed: {e}")
+
+        return []
 
     def _extract_entities_from_metadata(self, vector_results: List[Dict]) -> List[str]:
         """从向量检索结果的 metadata 中自动提取实体"""
@@ -89,7 +124,11 @@ class EnhancedRetriever:
         )
         logger.debug("[Retriever] vector_store.search() returned {} results", len(vector_results))
 
-        # 2. 自动从检索结果中提取实体
+        # 2. 使用 LLM 从查询中提取 subject + relation
+        query_triples = self._extract_query_triples(query_text)
+        print(f"[Retriever] Query triples: {query_triples}")
+
+        # 3. 自动从检索结果中提取实体
         query_entities = self._extract_entities_from_metadata(vector_results)
 
         # 构建 vector_hits: {id: score}
@@ -151,6 +190,22 @@ class EnhancedRetriever:
                 for result in vector_results:
                     if result["id"] == doc_id:
                         metadata = result.get("metadata", {})
+
+                        # LLM 主体+关系过滤：如果有查询三元组，用 subject + relation 匹配
+                        if query_triples:
+                            stored_subject = metadata.get("subject", "").lower()
+                            stored_relation = metadata.get("relation", "").lower()
+                            matched = False
+                            for qt in query_triples:
+                                q_subj = qt.get("subject", "").lower()
+                                q_rel = qt.get("relation", "").lower()
+                                # 匹配 subject + relation
+                                if q_subj in stored_subject and q_rel in stored_relation:
+                                    matched = True
+                                    break
+                            if not matched:
+                                continue
+
                         # 从 metadata 获取 memory_node_id
                         memory_node_id = metadata.get("memory_node_id", doc_id)
                         facts.append({
