@@ -262,8 +262,6 @@ class AgentLoop:
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
 
-    @staticmethod
-
     def _init_experience_store(self) -> None:
         """Initialize experience store for tool execution history."""
         try:
