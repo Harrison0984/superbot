@@ -361,15 +361,30 @@ def gateway(
         from superbot.agent.memory_adapter import create_memory_adapter
 
         embedding_provider = create_embedding_provider(config.embedding)
-        # Use local model for memory if available, otherwise fall back to main provider
-        llm_provider_for_memory = memory_provider if memory_provider else main_provider
-        llm_adapter = create_llm_adapter(llm_provider_for_memory, config.agents.defaults.model, config.embedding)
 
-        memory_system = create_memory_adapter(
+        # Create memory adapter first to get memory_config
+        memory_adapter, memory_config = create_memory_adapter(
             workspace=config.workspace_path,
             embedding_provider=embedding_provider,
-            llm_provider=llm_adapter,
+            llm_provider=None,  # Will set after creating llm_adapter
         )
+
+        # Use local model for memory if available, otherwise fall back to main provider
+        llm_provider_for_memory = memory_provider if memory_provider else main_provider
+        llm_adapter = create_llm_adapter(
+            llm_provider_for_memory,
+            config.agents.defaults.model,
+            config.embedding,
+            memory_config=memory_config,
+        )
+
+        # Set the llm_adapter on memory_adapter if it was created
+        if memory_adapter and llm_adapter:
+            # Set LLM on the internal memory system (not just the adapter)
+            if memory_adapter._memory_system:
+                memory_adapter._memory_system.set_llm(llm_adapter)
+            memory_system = memory_adapter
+
         if memory_system:
             console.print("[green]✓[/green] Vector memory system enabled")
         else:
@@ -518,15 +533,30 @@ def agent(
         from superbot.agent.memory_adapter import create_memory_adapter
 
         embedding_provider = create_embedding_provider(config.embedding)
-        # Use local model for memory if available, otherwise fall back to main provider
-        llm_provider_for_memory = memory_provider if memory_provider else main_provider
-        llm_adapter = create_llm_adapter(llm_provider_for_memory, config.agents.defaults.model, config.embedding)
 
-        memory_system = create_memory_adapter(
+        # Create memory adapter first to get memory_config
+        memory_adapter, memory_config = create_memory_adapter(
             workspace=config.workspace_path,
             embedding_provider=embedding_provider,
-            llm_provider=llm_adapter,
+            llm_provider=None,  # Will set after creating llm_adapter
         )
+
+        # Use local model for memory if available, otherwise fall back to main provider
+        llm_provider_for_memory = memory_provider if memory_provider else main_provider
+        llm_adapter = create_llm_adapter(
+            llm_provider_for_memory,
+            config.agents.defaults.model,
+            config.embedding,
+            memory_config=memory_config,
+        )
+
+        # Set the llm_adapter on memory_adapter if it was created
+        if memory_adapter and llm_adapter:
+            # Set LLM on the internal memory system (not just the adapter)
+            if memory_adapter._memory_system:
+                memory_adapter._memory_system.set_llm(llm_adapter)
+            memory_system = memory_adapter
+
         if memory_system:
             console.print("[green]✓[/green] Vector memory system enabled")
         else:

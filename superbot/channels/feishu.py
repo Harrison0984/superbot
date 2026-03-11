@@ -628,7 +628,16 @@ class FeishuChannel(BaseChannel):
             return
 
         try:
-            receive_id_type = "chat_id" if msg.chat_id.startswith("oc_") else "open_id"
+            # Determine receive_id: use chat_id if valid Feishu ID, otherwise use configured user_id
+            chat_id = msg.chat_id
+            if not chat_id or (not chat_id.startswith("oc_") and not chat_id.startswith("ou_")):
+                # Not a valid Feishu chat_id/open_id, use configured user_id
+                chat_id = self.config.user_id
+                if not chat_id:
+                    logger.warning("Feishu: no valid chat_id and no user_id configured, skipping message")
+                    return
+
+            receive_id_type = "chat_id" if chat_id.startswith("oc_") else "open_id"
             loop = asyncio.get_running_loop()
 
             for file_path in msg.media:
@@ -641,7 +650,7 @@ class FeishuChannel(BaseChannel):
                     if key:
                         await loop.run_in_executor(
                             None, self._send_message_sync,
-                            receive_id_type, msg.chat_id, "image", json.dumps({"image_key": key}, ensure_ascii=False),
+                            receive_id_type, chat_id, "image", json.dumps({"image_key": key}, ensure_ascii=False),
                         )
                 else:
                     key = await loop.run_in_executor(None, self._upload_file_sync, file_path)
@@ -649,14 +658,14 @@ class FeishuChannel(BaseChannel):
                         media_type = "audio" if ext in self._AUDIO_EXTS else "file"
                         await loop.run_in_executor(
                             None, self._send_message_sync,
-                            receive_id_type, msg.chat_id, media_type, json.dumps({"file_key": key}, ensure_ascii=False),
+                            receive_id_type, chat_id, media_type, json.dumps({"file_key": key}, ensure_ascii=False),
                         )
 
             if msg.content and msg.content.strip():
                 card = {"config": {"wide_screen_mode": True}, "elements": self._build_card_elements(msg.content)}
                 await loop.run_in_executor(
                     None, self._send_message_sync,
-                    receive_id_type, msg.chat_id, "interactive", json.dumps(card, ensure_ascii=False),
+                    receive_id_type, chat_id, "interactive", json.dumps(card, ensure_ascii=False),
                 )
 
         except Exception as e:

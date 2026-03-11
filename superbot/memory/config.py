@@ -124,6 +124,22 @@ class Config(BaseModel):
     rrf_score = 1 / (k + rank)
     """
 
+    # ==================== Action-Metadata Extraction Config ====================
+
+    action_metadata_prompt: str = ""
+    """
+    动作-元数据提取的提示词模板
+
+    占位符:
+    - {text}: 待提取的文本
+    - {context}: 对话上下文 (可选)
+    - {example}: 示例
+    """
+    action_metadata_example: str = ""
+    """
+    动作-元数据提取的示例
+    """
+
 
 # 全局默认配置
 config = Config()

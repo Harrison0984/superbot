@@ -103,13 +103,39 @@ class EnhancedRetriever:
         # 3. SQL 增强路 (RRF 融合)
         sql_ranked_ids = self._get_sql_recall_ranked(vector_hits)
 
-        # 4. RRF 融合
+        # 4. Get max memory_node_id for recency boost
+        max_node_id = 0
+        # Build lookup dict for O(1) access instead of O(n) search
+        node_id_map = {}
+        for result in vector_results:
+            doc_id = result["id"]
+            metadata = result.get("metadata", {})
+            node_id = metadata.get("memory_node_id", 0)
+            node_id_map[doc_id] = node_id
+            try:
+                max_node_id = max(max_node_id, int(node_id))
+            except (ValueError, TypeError):
+                pass
+
+        # 5. RRF 融合 + Recency Boost
         rrf_scores = {}
+        recency_boost = 1.2  # Recent items get 20% boost
 
         # 向量路排名
         vector_ranked_ids = sorted(vector_hits.keys(), key=lambda x: vector_hits[x], reverse=True)
         for rank, v_id in enumerate(vector_ranked_ids, start=1):
-            rrf_scores[v_id] = rrf_scores.get(v_id, 0) + 1 / (self.rrf_k + rank)
+            # Calculate recency boost using lookup dict
+            recency_factor = 1.0
+            if max_node_id > 0:
+                node_id = node_id_map.get(v_id, 0)
+                try:
+                    node_id_int = int(node_id)
+                    # Normalize: newest gets boost, oldest gets 1.0
+                    recency_factor = 1.0 + (recency_boost - 1.0) * (node_id_int / max_node_id)
+                except (ValueError, TypeError):
+                    pass
+
+            rrf_scores[v_id] = rrf_scores.get(v_id, 0) + (1 / (self.rrf_k + rank)) * recency_factor
 
         # SQL 路排名
         for rank, v_id in enumerate(sql_ranked_ids, start=1):

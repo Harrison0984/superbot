@@ -79,6 +79,10 @@ class AgentLoop:
         self.memory_provider = memory_provider
         self.memory_system = memory_system
         self.provider = provider
+
+        # Initialize experience store for tool execution history
+        self._experience_store = None
+        self._init_experience_store()
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
@@ -135,7 +139,21 @@ class AgentLoop:
         self._idle_check_interval = 60  # 空闲检查间隔（秒）
         self._idle_threshold = DEFAULT_IDLE_THRESHOLD  # 默认空闲阈值（秒）
 
+        # Register default idle tasks
+        self._register_default_idle_tasks()
+
         self._register_default_tools()
+
+    def _register_default_idle_tasks(self) -> None:
+        """Register default idle tasks."""
+        # Import here to avoid circular imports
+        from superbot.agent.idle_tasks import CleanupIdleTask, EntityNormalizationIdleTask
+
+        # Register entity normalization (1 hour threshold)
+        self.register_idle_task(EntityNormalizationIdleTask(idle_threshold_seconds=3600))
+
+        # Register cleanup (default threshold)
+        self.register_idle_task(CleanupIdleTask())
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -245,11 +263,139 @@ class AgentLoop:
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
 
     @staticmethod
+
+    def _init_experience_store(self) -> None:
+        """Initialize experience store for tool execution history."""
+        try:
+            from superbot.memory.storage.experience_store import ExperienceStore
+            db_path = str(self.workspace / "memory" / "experience.db")
+            self._experience_store = ExperienceStore(db_path=db_path)
+            logger.info("Experience store initialized at {}", db_path)
+        except Exception as e:
+            logger.warning("Failed to initialize experience store: {}", e)
+            self._experience_store = None
+
+    def _rank_tool_calls(self, tool_calls: list) -> list:
+        """Rank tool calls based on experience (success rate and recency)."""
+        if not self._experience_store or not tool_calls:
+            return tool_calls
+
+        try:
+            experiences = self._experience_store.get_all_success_rates()
+            if not experiences:
+                return tool_calls
+
+            def _calc_score(tc):
+                exp = experiences.get(tc.name)
+                if not exp:
+                    return 0.0  # No experience = 0
+
+                # Base score from success rate
+                success_rate = exp.get("success_rate", 0)
+                if success_rate == 0:
+                    return 0.0
+
+                # Time factor: recent success = higher score
+                # Today = 1.0, 30 days ago = 0.5, >30 days = 0.5
+                time_factor = 0.5
+                last_success = exp.get("last_success")
+                if last_success:
+                    try:
+                        from datetime import datetime
+                        last_dt = datetime.fromisoformat(last_success.replace('Z', '+00:00'))
+                        days_since = (datetime.now() - last_dt.replace(tzinfo=None)).days
+                        time_factor = max(0.5, 1.0 - days_since / 30)
+                    except Exception:
+                        pass
+
+                return success_rate * time_factor
+
+            # Sort by score descending
+            scored = [(tc, _calc_score(tc)) for tc in tool_calls]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return [tc for tc, _ in scored]
+        except Exception as e:
+            logger.warning("Failed to rank tool calls: {}", e)
+            return tool_calls
+
     def _strip_think(text: str | None) -> str | None:
         """Remove <think>…</think> blocks that some models embed in content."""
         if not text:
             return None
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
+
+
+    def _record_action_result(
+        self,
+        tool_name: str,
+        args: dict,
+        result: str,
+        time_cost: float,
+    ) -> None:
+        """Record tool execution result to pending actions."""
+        if not self._experience_store:
+            return
+
+        try:
+            # Determine method from args (common method fields)
+            method = args.get("method") or args.get("source") or "default"
+
+            # Determine if result is valid (not empty, no error)
+            has_result = bool(result and len(result.strip()) > 0)
+            has_error = result and ("error" in result.lower() or "failed" in result.lower())
+
+            # Add to pending actions (success will be determined later)
+            if not hasattr(self, '_pending_actions'):
+                self._pending_actions = []
+
+            self._pending_actions.append({
+                "tool_name": tool_name,
+                "method": method,
+                "time_cost": time_cost,
+                "has_result": has_result,
+                "has_error": has_error,
+                "args": args,
+            })
+        except Exception as e:
+            logger.debug("Failed to record action result: {}", e)
+
+    def _finalize_action_results(self) -> None:
+        """Finalize pending action results - mark last one as success."""
+        if not self._experience_store or not hasattr(self, '_pending_actions'):
+            return
+
+        if not self._pending_actions:
+            return
+
+        try:
+            # Mark the last action as success (agent stopped here = satisfied)
+            # Others are marked as intermediate/failed
+            for i, action in enumerate(self._pending_actions):
+                # Last one is success, others are intermediate
+                is_last = (i == len(self._pending_actions) - 1)
+
+                if is_last:
+                    # Last tool call - agent stopped here = success
+                    success = action["has_result"] and not action["has_error"]
+                else:
+                    # Previous tool calls - not the final answer
+                    success = False
+
+                self._experience_store.record_action(
+                    action_type=action["tool_name"],
+                    method=action["method"],
+                    success=success,
+                    quality=None,
+                    time_cost=action["time_cost"],
+                    context=action["args"],
+                )
+
+            logger.debug("Finalized {} action results", len(self._pending_actions))
+        except Exception as e:
+            logger.warning("Failed to finalize action results: {}", e)
+        finally:
+            # Clear pending actions
+            self._pending_actions = []
 
     @staticmethod
     def _tool_hint(tool_calls: list) -> str:
@@ -384,15 +530,28 @@ class AgentLoop:
                     thinking_blocks=response.thinking_blocks,
                 )
 
-                for tool_call in response.tool_calls:
+                # Rank tool calls based on experience
+                tool_calls = self._rank_tool_calls(response.tool_calls)
+
+                # Initialize pending actions for this round
+                self._pending_actions = []
+
+                for tool_call in tool_calls:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     args = dict(tool_call.arguments)
                     # Extract content from args
                     content = args.pop("content", "")
+
+                    # Record start time for this tool execution
+                    start_time = time.time()
+
                     result = await self.tools.execute(
                         tool_call.name, channel, sender_id, chat_id, content, args
                     )
+
+                    # Calculate elapsed time
+                    elapsed = time.time() - start_time
 
                     # 解析工具返回值，全部交给 LLM 处理
                     try:
@@ -406,10 +565,18 @@ class AgentLoop:
                     # 添加工具返回的媒体文件
                     user_media.extend(tool_media)
 
+                    # Record action result to experience store (with time cost)
+                    self._record_action_result(
+                        tool_call.name, args, tool_content, elapsed
+                    )
+
                     # 交给 LLM 处理
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, tool_content
                     )
+
+                # Finalize action results after the loop (mark last as success)
+                self._finalize_action_results()
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can

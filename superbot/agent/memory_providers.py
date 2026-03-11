@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 try:
     from superbot.memory.models.protocols import EmbeddingProvider as _EmbeddingProvider
     from superbot.memory.models.protocols import LLMProvider as _LLMProvider
+    from superbot.memory.config import Config as MemoryConfig
 
     class EmbeddingProvider(_EmbeddingProvider):
         """Protocol for embedding providers."""
@@ -26,6 +27,7 @@ try:
         """Protocol for LLM providers."""
         pass
 except ImportError:
+    MemoryConfig = None
     from typing import Protocol as _Protocol
 
     class EmbeddingProvider(_Protocol):
@@ -167,6 +169,7 @@ class SuperbotLLMAdapter:
         provider: Any,
         default_model: str = "default",
         config: "EmbeddingConfig | None" = None,
+        memory_config: "MemoryConfig | None" = None,
     ):
         """Initialize the LLM adapter.
 
@@ -174,10 +177,12 @@ class SuperbotLLMAdapter:
             provider: Superbot LLM provider instance.
             default_model: Default model to use for generation.
             config: EmbeddingConfig instance for LLM parameters.
+            memory_config: MemoryConfig instance for memory-specific settings.
         """
         self._provider = provider
         self._default_model = default_model
         self._config = config
+        self._memory_config = memory_config
 
     def _calculate_max_input_chars(self, output_tokens: int | None) -> int:
         """Calculate max input characters based on output token limit.
@@ -269,14 +274,17 @@ class SuperbotLLMAdapter:
                 response = future.result(timeout=timeout_seconds)
         return response.content or ""
 
-    def extract_triples(self, text: str) -> list[dict[str, Any]]:
-        """Extract knowledge triples from text using LLM.
+    def extract_triples(self, text: str, context: str = "") -> list[dict[str, Any]]:
+        """Extract action-metadata pairs from text using LLM.
 
         Args:
-            text: Input text to extract triples from.
+            text: Input text to extract from.
+            context: Optional conversation context (previous user-assistant pairs).
 
         Returns:
-            List of triple dictionaries with subject, relation, object keys.
+            List of dictionaries with action and metadata keys.
+            - action: The core logical action (for vectorization)
+            - metadata: Dictionary of attributes (who, where, when, etc.)
         """
         # None = no limit, use provider default
         max_tokens = None
@@ -284,42 +292,92 @@ class SuperbotLLMAdapter:
 
         # If text fits in one chunk, process normally
         if len(text) <= max_input_chars:
-            return self._extract_triples_single(text, max_tokens)
+            return self._extract_action_metadata_single(text, max_tokens, context)
 
         # Split into chunks and process each, then merge results
-        all_triples = []
+        all_pairs = []
         chunk_size = int(max_input_chars * 0.9)  # 90% to leave some buffer
 
         for i in range(0, len(text), chunk_size):
             chunk = text[i:i + chunk_size]
-            triples = self._extract_triples_single(chunk, max_tokens)
-            all_triples.extend(triples)
+            pairs = self._extract_action_metadata_single(chunk, max_tokens, context)
+            all_pairs.extend(pairs)
 
-        # Deduplicate by subject-relation-object
-        return self._deduplicate_triples(all_triples)
+        # Deduplicate by action
+        return self._deduplicate_pairs(all_pairs)
 
-    def _extract_triples_single(self, text: str, max_tokens: int | None) -> list[dict[str, Any]]:
-        """Extract triples from a single chunk of text."""
-        prompt = f"""Extract knowledge triples from the following text.
-Return a JSON array of triples in the format: [{{"subject": "...", "relation": "...", "object": "..."}}]
+    def _extract_action_metadata_single(self, text: str, max_tokens: int | None, context: str = "") -> list[dict[str, Any]]:
+        """Extract action-metadata pairs from a single chunk of text."""
+        # Extract subject from text (e.g., [USER] or [ASSISTANT] prefix)
+        default_subject = "User"
+        if text.startswith("[USER]"):
+            default_subject = "User"
+            text = text[6:].strip()
+        elif text.startswith("[ASSISTANT]"):
+            default_subject = "Assistant"
+            text = text[11:].strip()
 
-Text: {text}
+        # Get prompt template from config, or use default
+        prompt_template = self._get_action_metadata_prompt()
 
-Triples:"""
+        # Build context section if provided
+        context_section = ""
+        if context:
+            context_section = f"\n\nConversation context:\n{context}\n"
+
+        # Format example with default_subject
+        example = f'"I deployed Qwen on the grassland" -> [{{"action": "deploy Qwen", "metadata": {{"location": "grassland", "subject": "{default_subject}"}}}}]'
+
+        prompt = prompt_template.format(
+            text=text,
+            default_subject=default_subject,
+            example=example,
+            context=context_section
+        )
 
         temperature = self._get_temperature(0.3, method="triple")
         response = self.generate(prompt, max_tokens=max_tokens, temperature=temperature)
         return self._parse_json(response)
 
-    def _deduplicate_triples(self, triples: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Remove duplicate triples based on subject-relation-object."""
+    def _get_action_metadata_prompt(self) -> str:
+        """Get the action-metadata extraction prompt template from config."""
+        if MemoryConfig is not None:
+            try:
+                # Try to get config from memory system if available
+                if hasattr(self, '_memory_config') and self._memory_config:
+                    template = self._memory_config.action_metadata_prompt
+                    if template:
+                        return template
+            except Exception:
+                pass
+
+        # Optimized prompt for action extraction
+        return """Extract action and metadata from text.
+
+Context shows conversation history with [USER] and [ASSISTANT] roles.
+{context}
+Text: {text}
+
+Action types:
+- "remember": memorize/remember something
+- "rename": when someone gives a name
+- "query": when searching for info
+- "get-info": when asking a question
+- "query-past": when asking about past info (e.g., "我叫什么？" = what is my name)
+
+For "get-info" and "query-past", also extract what to search for in "query_for".
+
+Output: {{\"action\": \"\", \"metadata\": {{}}, \"query_for\": \"\"}}"""
+
+    def _deduplicate_pairs(self, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove duplicate pairs based on action."""
         seen = set()
         unique = []
-        for t in triples:
-            key = (t.get("subject", ""), t.get("relation", ""), t.get("object", ""))
-            if key not in seen and all(key):
-                seen.add(key)
-                unique.append(t)
+        for p in pairs:
+            action = p.get("action", "")
+            if action and action not in seen:
+                seen.add(action)
+                unique.append(p)
         return unique
 
     def compress(self, text: str) -> str:
@@ -488,15 +546,16 @@ def create_embedding_provider(config) -> EmbeddingProvider | None:
     return SuperbotEmbeddingAdapter(model_path=config.model_path)
 
 
-def create_llm_adapter(provider, default_model: str, config=None) -> LLMProvider:
+def create_llm_adapter(provider, default_model: str, config=None, memory_config=None) -> LLMProvider:
     """Create LLM adapter from superbot provider.
 
     Args:
         provider: Superbot LLM provider instance.
         default_model: Default model name.
         config: EmbeddingConfig instance for LLM parameters.
+        memory_config: MemoryConfig instance for memory-specific settings.
 
     Returns:
         SuperbotLLMAdapter instance.
     """
-    return SuperbotLLMAdapter(provider=provider, default_model=default_model, config=config)
+    return SuperbotLLMAdapter(provider=provider, default_model=default_model, config=config, memory_config=memory_config)

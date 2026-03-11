@@ -160,16 +160,18 @@ def create_memory_adapter(
     workspace: Path,
     embedding_provider=None,
     llm_provider=None,
-) -> MemoryAdapter | None:
+    memory_config=None,
+) -> tuple[MemoryAdapter | None, Any]:
     """Create MemoryAdapter from workspace and providers.
 
     Args:
         workspace: Workspace path for data storage.
         embedding_provider: EmbeddingProvider instance.
         llm_provider: LLMProvider instance.
+        memory_config: MemoryConfig instance (optional, will create if not provided).
 
     Returns:
-        MemoryAdapter instance, or None if memory system unavailable.
+        Tuple of (MemoryAdapter instance or None, memory_config or None).
     """
     try:
         from superbot.memory.facade.memory_system import MemorySystem
@@ -178,8 +180,9 @@ def create_memory_adapter(
         # Create memory system with data directory in workspace
         data_dir = str(workspace / "memory" / "data")
 
-        # Create memory config with reasonable defaults
-        memory_config = MemoryConfig()
+        # Create memory config with reasonable defaults if not provided
+        if memory_config is None:
+            memory_config = MemoryConfig()
 
         memory_system = MemorySystem(
             data_dir=data_dir,
@@ -192,15 +195,17 @@ def create_memory_adapter(
         if llm_provider:
             memory_system.set_llm(llm_provider)
 
-        return MemoryAdapter(
+        adapter = MemoryAdapter(
             memory_system=memory_system,
             embedding_provider=embedding_provider,
             llm_provider=llm_provider,
         )
 
+        return adapter, memory_config
+
     except ImportError as e:
         logger.error("Failed to import memory system: {}", e)
-        return None
+        return None, None
     except Exception as e:
         logger.error("Failed to create memory adapter: {}", e)
-        return None
+        return None, None

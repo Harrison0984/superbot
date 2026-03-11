@@ -305,3 +305,72 @@ class EnhancedRelationStore(RelationStore):
             memory["raw_log"] = raw_log
 
         return memory
+
+    def get_all_memory_nodes(self) -> List[Dict[str, Any]]:
+        """Get all memory nodes"""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, raw_id, timestamp, tag, summary, vector_id, entities, facts
+                FROM memory_nodes
+                ORDER BY id DESC
+            """)
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                results.append({
+                    "id": row[0],
+                    "raw_id": row[1],
+                    "timestamp": row[2],
+                    "tag": row[3],
+                    "summary": row[4],
+                    "vector_id": row[5],
+                    "entities": row[6],
+                    "facts": row[7],
+                })
+            return results
+        finally:
+            conn.close()
+
+    def update_memory_node(
+        self,
+        memory_id: int,
+        summary: str = None,
+        entities: str = None,
+        facts: str = None,
+        tag: str = None,
+    ) -> bool:
+        """Update a memory node"""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+            # Build update query dynamically
+            updates = []
+            params = []
+            if summary is not None:
+                updates.append("summary = ?")
+                params.append(summary)
+            if entities is not None:
+                updates.append("entities = ?")
+                params.append(entities)
+            if facts is not None:
+                updates.append("facts = ?")
+                params.append(facts)
+            if tag is not None:
+                updates.append("tag = ?")
+                params.append(tag)
+
+            if not updates:
+                return False
+
+            params.append(memory_id)
+            cursor.execute(f"""
+                UPDATE memory_nodes
+                SET {', '.join(updates)}
+                WHERE id = ?
+            """, params)
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()

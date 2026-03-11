@@ -1,4 +1,4 @@
-"""记忆系统门面 - 统一入口"""
+"""Memory System Facade - Unified Entry"""
 import os
 import sys
 import threading
@@ -9,7 +9,7 @@ from datetime import datetime
 import numpy as np
 from loguru import logger
 
-# 添加 src 到路径
+# Add src to path
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -21,7 +21,7 @@ from superbot.memory.pipeline.ingestion.entropy_gatekeeper import EntropyGatekee
 from superbot.memory.pipeline.ingestion.cache_buffer import CacheBuffer
 from superbot.memory.pipeline.retrieval import EnhancedRetriever
 
-# 类型提示
+# Type hints
 from superbot.memory.models import LLMProvider, EmbeddingProvider
 from typing import TYPE_CHECKING
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 
 class MemorySystem:
-    """记忆管理系统 - 门面模式"""
+    """Memory Management System - Facade Pattern"""
 
     def __init__(
         self,
@@ -38,14 +38,15 @@ class MemorySystem:
         config: Optional[Config] = None
     ):
         self.config = config if config is not None else Config()
-        self.data_dir = data_dir
+        # Convert to absolute path to avoid issues with relative paths
+        self.data_dir = os.path.abspath(os.path.expanduser(data_dir))
         self._llm: Optional[LLMProvider] = None
         self._embedding: Optional[EmbeddingProvider] = None
 
-        # 确保数据目录存在
-        os.makedirs(data_dir, exist_ok=True)
+        # Ensure data directory exists
+        os.makedirs(self.data_dir, exist_ok=True)
 
-        # 初始化存储层 (统一在 data 目录下)
+        # Initialize storage layer (unified in data directory)
         self.vector_store = VectorStore(
             persist_directory=os.path.join(data_dir, "chroma")
         )
@@ -53,7 +54,7 @@ class MemorySystem:
             db_path=os.path.join(data_dir, "memmory.db")
         )
 
-        # 初始化输入处理管道组件
+        # Initialize input processing pipeline components
         self.entropy_gatekeeper = EntropyGatekeeper(
             threshold=self.config.entropy_threshold,
             buffer_count=self.config.entropy_buffer_count,
@@ -172,8 +173,42 @@ class MemorySystem:
             logger.debug("[Memory] remember() success, history length: {}", len(self.history))
             return True
 
+    def _split_long_text(self, text: str) -> list[str]:
+        """Split text into multiple parts if it contains multiple intents.
+
+        Split by:
+        - Chinese comma '，' followed by new intent
+        - Period '。' or '！'
+        - Multiple statements separated by ','
+        """
+        # Remove prefix for analysis
+        clean_text = text
+        prefix = ""
+        if text.startswith("[USER]"):
+            prefix = "[USER] "
+            clean_text = text[6:].strip()
+        elif text.startswith("[ASSISTANT]"):
+            prefix = "[ASSISTANT] "
+            clean_text = text[12:].strip()
+
+        # Split by common delimiters
+        import re
+        # Split by: Chinese period, exclamation, question mark, or comma+space
+        parts = re.split(r'[。！？\n]+|(?<=[，]),', clean_text)
+        parts = [p.strip() for p in parts if p.strip()]
+
+        # If only one part, return original
+        if len(parts) <= 1:
+            return [text]
+
+        # Add prefix back
+        return [f"{prefix}{p}" for p in parts]
+
     def _process_buffer(self):
         """处理缓冲区中的内容"""
+        import uuid
+        call_id = str(uuid.uuid4())[:8]
+
         if not self.process_buffer.should_process():
             logger.debug("[Memory] _process_buffer() skipped, buffer not ready")
             return
@@ -183,53 +218,77 @@ class MemorySystem:
             logger.debug("[Memory] _process_buffer() skipped, no batch items")
             return
 
-        logger.debug("[Memory] _process_buffer() processing {} items", len(batch_items))
+        logger.debug("[Memory] _process_buffer() [{}] processing {} items", call_id, len(batch_items))
         batch_text = [item["text"] for item in batch_items]
 
         # 调用 LLM 提纯
         llm = self._get_llm()
         extracted = []
+        logger.debug("[Memory] _process_buffer() [{}] batch_text: {}", call_id, batch_text)
+
+        # Build conversation context from recent history (increased window)
+        context = self._build_context()
+
         for text in batch_text:
             if llm is not None:
                 try:
-                    triples = llm.extract_triples(text)
-                    if isinstance(triples, list) and triples:
-                        entities = [{"value": t.get("subject", ""), "type": "subject"}
-                                   for t in triples if t.get("subject")]
-                        entities += [{"value": t.get("object", ""), "type": "object"}
-                                   for t in triples if t.get("object")]
+                    # Use new action-metadata extraction with context
+                    action_metadata = llm.extract_triples(text, context=context)
+                    logger.debug("[Memory] _process_buffer() [{}] raw result type: {}, value: {}", call_id, type(action_metadata).__name__, action_metadata)
+                    logger.debug("[Memory] _process_buffer() [{}] is list: {}, is truthy: {}", call_id, isinstance(action_metadata, list), bool(action_metadata))
+                    # Handle both dict and list responses
+                    if isinstance(action_metadata, dict) and action_metadata:
+                        # Single result as dict
+                        data = action_metadata
+                        action = data.get("action", text)
+                        metadata = data.get("metadata", {})
+                        query_for = data.get("query_for", "")
                         extracted.append({
-                            "tag": "三元组",
-                            "summary": text,  # 使用原始文本作为 summary
-                            "entities": entities,
-                            "facts": [t.get("subject", "") + "-" + t.get("relation", "") + "-" + t.get("object", "")
-                                     for t in triples if t.get("subject") and t.get("relation") and t.get("object")]
+                            "tag": "action",
+                            "action": action,
+                            "metadata": metadata,
+                            "query_for": query_for,
                         })
+                        logger.debug("[Memory] _process_buffer() [{}] extracted action: {}, metadata: {}, query_for: {}", call_id, action, metadata, query_for)
+                    elif isinstance(action_metadata, list) and action_metadata:
+                        # List of results
+                        data = action_metadata[0]
+                        action = data.get("action", text)
+                        metadata = data.get("metadata", {})
+                        query_for = data.get("query_for", "")
+                        extracted.append({
+                            "tag": "action",
+                            "action": action,
+                            "metadata": metadata,
+                            "query_for": query_for,
+                        })
+                        logger.debug("[Memory] _process_buffer() [{}] extracted action: {}, metadata: {}", call_id, action, metadata)
                     else:
-                        extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
+                        logger.debug("[Memory] _process_buffer() [{}] empty result, using fallback", call_id)
+                        extracted.append({"tag": "未分类", "action": text, "metadata": {}})
                 except Exception as e:
-                    logger.warning("[Memory] _process_buffer() LLM extraction failed: {}", e)
-                    extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
+                    logger.warning("[Memory] _process_buffer() [{}] LLM extraction failed: {}", call_id, e)
+                    extracted.append({"tag": "未分类", "action": text, "metadata": {}})
             else:
-                extracted.append({"tag": "未分类", "summary": text, "entities": [], "facts": []})
+                extracted.append({"tag": "未分类", "action": text, "metadata": {}})
 
-        # 存储：raw_logs → memory_nodes → relationships
+        # 存储：raw_logs → memory_nodes → vector_store (action + metadata)
         for i, item in enumerate(batch_items):
             raw_text = item["text"]
             vector = item["vector"].tolist()
 
             if i < len(extracted):
                 data = extracted[i]
-                tag = data.get("tag", "未分类")
-                summary = data.get("summary", raw_text)
-                entities = data.get("entities", [])
-                facts = data.get("facts", [])
+                logger.debug("[Memory] _process_buffer() data for i={}: {}", i, data)
+                action = data.get("action", raw_text)  # 核心动作，用于向量化
+                metadata = data.get("metadata", {})      # 属性，用于过滤
+                tag = data.get("tag", "action")
 
                 # 1. 存储原始日志
                 raw_id = self.relation_store.add_raw_log(
                     content=raw_text,
                     source="memory",
-                    incremental_density=None  # 可从 EntropyGatekeeper 获取
+                    incremental_density=None
                 )
                 logger.debug("[Memory] _process_buffer() added raw_log id: {}", raw_id)
 
@@ -237,50 +296,54 @@ class MemorySystem:
                 vector_id = str(uuid.uuid4())
 
                 # 3. 存储记忆节点
+                import json
                 memory_node_id = self.relation_store.add_memory_node(
                     raw_id=raw_id,
                     tag=tag,
-                    summary=summary,
+                    summary=action,  # 使用 action 作为 summary
                     vector_id=vector_id,
-                    entities=entities,
-                    facts=facts
+                    entities=json.dumps(metadata),  # 存储 metadata
+                    facts=json.dumps([action])      # 存储 action
                 )
-                logger.debug("[Memory] _process_buffer() added memory_node id: {}, tag: {}", memory_node_id, tag)
+                logger.debug("[Memory] _process_buffer() added memory_node id: {}, action: {}", memory_node_id, action)
 
-                # 4. 存入向量库（处理空值）
-                # ChromaDB only supports str, int, float, bool in metadata - convert to JSON strings
-                import json
-                metadata = {"tag": tag, "memory_node_id": memory_node_id}
-                if entities:
-                    metadata["entities"] = json.dumps(entities)
-                if facts:
-                    metadata["facts"] = json.dumps(facts)
+                # 4. 存入向量库
+                # - documents: action (用于向量匹配)
+                # - metadata: 包含所有属性用于过滤
+                store_metadata = {"tag": tag, "memory_node_id": memory_node_id}
+                store_metadata.update(metadata)  # 添加所有过滤属性
                 self.vector_store.add(
                     ids=[vector_id],
                     vectors=[vector],
-                    documents=[summary],
-                    metadatas=[metadata]
+                    documents=[action],
+                    metadatas=[store_metadata]
                 )
-                logger.debug("[Memory] _process_buffer() added vector_store id: {}", vector_id)
-
-                # 5. 存储实体关系
-                for fact in facts:
-                    if isinstance(fact, str) and "-" in fact:
-                        parts = fact.split("-", 2)
-                        if len(parts) >= 3:
-                            subject = parts[0].strip()
-                            relation = parts[1].strip()
-                            obj = parts[2].strip()
-                            if subject and relation and obj:
-                                self.relation_store.upsert_relation(
-                                    head=subject,
-                                    relation=relation,
-                                    tail=obj,
-                                    ref_id=raw_id
-                                )
-                                logger.debug("[Memory] _process_buffer() added relation: {}--{}-->{}", subject, relation, obj)
+                logger.debug("[Memory] _process_buffer() added vector_store id: {}, metadata: {}", vector_id, metadata)
 
         logger.debug("[Memory] _process_buffer() completed for {} items", len(batch_items))
+
+    def _build_context(self) -> str:
+        """Build conversation context from recent history.
+
+        Returns last 6 conversation turns (3 user + 3 assistant pairs) as context.
+        """
+        if not self.history or len(self.history) < 2:
+            return ""
+
+        # Get last 6 messages (3 conversation turns) for better context
+        recent = self.history[-6:] if len(self.history) >= 6 else self.history
+
+        # Format as conversation turns
+        context_parts = []
+        for i, msg in enumerate(recent):
+            if msg.startswith("[USER]") or msg.startswith("[ASSISTANT]"):
+                context_parts.append(msg)
+            else:
+                # Handle messages without prefix
+                role = "User" if i % 2 == 0 else "Assistant"
+                context_parts.append(f"[{role}] {msg}")
+
+        return "\n".join(context_parts)
 
     def _track_topic(self, text: str) -> Optional[str]:
         """滑动窗口话题追踪"""
@@ -403,16 +466,23 @@ class MemorySystem:
 
         lines.append("")  # Blank line separator
 
-        # 2. Format logical relationship graph
-        relations = results.get("relations", [])
-        if relations:
-            lines.append("## Relationship Graph")
-            for rel in relations[:5]:
-                head = rel.get("head", "")
-                relation = rel.get("relation", "")
-                tail = rel.get("tail", "")
-                if head and relation and tail:
-                    lines.append(f"- ({head}) --[{relation}]--> ({tail})")
+        # 2. Format action metadata (from action-metadata pairs)
+        # Collect metadata from facts for display
+        metadata_entries = []
+        for fact in facts[:5]:
+            metadata = fact.get("metadata", {})
+            if metadata:
+                # Format: action + metadata attributes
+                action = fact.get("content", "")
+                if action and metadata:
+                    meta_str = ", ".join([f"{k}={v}" for k, v in metadata.items() if k not in ["tag", "memory_node_id", "timestamp"]])
+                    if meta_str:
+                        metadata_entries.append(f"- {action} ({meta_str})")
+                    else:
+                        metadata_entries.append(f"- {action}")
+        if metadata_entries:
+            lines.append("## Action Metadata")
+            lines.extend(metadata_entries[:5])
 
         lines.append("")  # Blank line separator
 
@@ -451,6 +521,106 @@ class MemorySystem:
         result = "\n".join(lines) if lines else ""
         logger.debug("[Memory] get_memory_context() returning {} chars", len(result))
         return result
+
+    def normalize_entities(self, similarity_threshold: float = 0.9) -> int:
+        """Normalize entities using embedding similarity.
+
+        Args:
+            similarity_threshold: Threshold for considering entities as same (0-1)
+
+        Returns:
+            Number of entities normalized
+        """
+        if self._embedding is None:
+            logger.warning("[Memory] normalize_entities() skipped: no embedding provider")
+            return 0
+
+        logger.info("[Memory] normalize_entities() started, threshold: {}", similarity_threshold)
+
+        # Get all memory nodes with entities
+        all_nodes = self.relation_store.get_all_memory_nodes()
+        if not all_nodes:
+            return 0
+
+        # Build entity list with node info
+        entities = []  # (node_id, entity_key, entity_value, vector)
+        for node in all_nodes:
+            try:
+                import json
+                node_id = node["id"]
+                entities_data = json.loads(node.get("entities", "{}")) if node.get("entities") else {}
+                # Extract entity from metadata
+                for key, value in entities_data.items():
+                    if isinstance(value, str) and value:
+                        # Encode entity
+                        vec = self._embedding.encode(value)
+                        entities.append((node_id, key, value, vec))
+            except Exception:
+                pass
+
+        if not entities:
+            return 0
+
+        # Find and merge similar entities
+        normalized_count = 0
+        processed_nodes = set()  # Track processed node IDs
+
+        for i in range(len(entities)):
+            node_id1, key1, value1, vec1 = entities[i]
+            if node_id1 in processed_nodes:
+                continue
+
+            for j in range(i + 1, len(entities)):
+                node_id2, key2, value2, vec2 = entities[j]
+                if node_id2 in processed_nodes:
+                    continue
+
+                # Calculate similarity
+                similarity = self._cosine_similarity(vec1, vec2)
+                if similarity >= similarity_threshold:
+                    logger.info("[Memory] normalize_entities() merging: {} -> {} (similarity: {:.2f})",
+                              value2, value1, similarity)
+
+                    # Keep the newer one (higher id), merge older into newer
+                    older_id, older_key, older_value = node_id2, key2, value2
+                    newer_id, newer_key, newer_value = node_id1, key1, value1
+                    if node_id2 > node_id1:
+                        older_id, older_key, older_value = node_id1, key1, value1
+                        newer_id, newer_key, newer_value = node_id2, key2, value2
+
+                    # Get current newer node data
+                    newer_node = self.relation_store.get_memory(newer_id)
+                    if newer_node:
+                        # Update newer node: add merged_from info
+                        import json
+                        current_entities = json.loads(newer_node.get("entities", "{}")) if newer_node.get("entities") else {}
+                        # Add the merged entity as an alias
+                        if "merged_from" not in current_entities:
+                            current_entities["merged_from"] = []
+                        current_entities["merged_from"].append({
+                            "key": older_key,
+                            "value": older_value,
+                            "similarity": float(similarity)
+                        })
+                        # Update newer node
+                        self.relation_store.update_memory_node(
+                            newer_id,
+                            entities=json.dumps(current_entities),
+                            tag="normalized"
+                        )
+
+                    # Mark older node as merged
+                    self.relation_store.update_memory_node(
+                        older_id,
+                        tag="merged"
+                    )
+
+                    normalized_count += 1
+                    processed_nodes.add(older_id)
+                    processed_nodes.add(newer_id)
+
+        logger.info("[Memory] normalize_entities() completed, normalized: {}", normalized_count)
+        return normalized_count
 
     def shutdown(self):
         """关闭系统"""
