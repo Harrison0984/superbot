@@ -351,19 +351,20 @@ class SuperbotLLMAdapter:
             except Exception:
                 pass
 
-        # Prompt for triple extraction: (subject, relation, object)
-        return """Extract knowledge triples from text.
-Extract (subject, relation, object) format triples.
+        # Prompt for triple extraction with summary
+        return """Extract knowledge triples and generate a concise summary.
+Output format: {{"triples": [{{"subject": "", "relation": "", "object": ""}}], "summary": ""}}
 
 Context shows conversation history with [USER] and [ASSISTANT] roles.
 {context}
 Text: {text}
 
-Examples:
-- "你记住小白兔是白色" -> [{{"subject": "小白兔", "relation": "颜色", "object": "白色"}}]
-- "我叫包子" -> [{{"subject": "我", "relation": "名字", "object": "包子"}}]
+Rules:
+- Extract ALL triples from the text (one sentence can have multiple facts)
+- Generate a concise summary (max 20 chars) capturing the key info
+- Summary should be useful for semantic search
 
-Output as JSON array: [{{"subject": "", "relation": "", "object": ""}}]"""
+Output: {{"triples": [], "summary": ""}}"""
 
     def _deduplicate_pairs(self, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove duplicate pairs based on action."""
