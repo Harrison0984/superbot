@@ -316,6 +316,7 @@ class AgentLoop:
             logger.warning("Failed to rank tool calls: {}", e)
             return tool_calls
 
+    @staticmethod
     def _strip_think(text: str | None) -> str | None:
         """Remove <think>…</think> blocks that some models embed in content."""
         if not text:

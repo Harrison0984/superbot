@@ -232,37 +232,58 @@ class MemorySystem:
         for text in batch_text:
             if llm is not None:
                 try:
-                    # Use new action-metadata extraction with context
+                    # Use action-metadata extraction with context
                     action_metadata = llm.extract_triples(text, context=context)
                     logger.debug("[Memory] _process_buffer() [{}] raw result type: {}, value: {}", call_id, type(action_metadata).__name__, action_metadata)
                     logger.debug("[Memory] _process_buffer() [{}] is list: {}, is truthy: {}", call_id, isinstance(action_metadata, list), bool(action_metadata))
-                    # Handle both dict and list responses
-                    if isinstance(action_metadata, dict) and action_metadata:
-                        # Single result as dict
-                        data = action_metadata
-                        action = data.get("action", text)
-                        metadata = data.get("metadata", {})
-                        query_for = data.get("query_for", "")
-                        extracted.append({
-                            "tag": "action",
-                            "action": action,
-                            "metadata": metadata,
-                            "query_for": query_for,
-                        })
-                        logger.debug("[Memory] _process_buffer() [{}] extracted action: {}, metadata: {}, query_for: {}", call_id, action, metadata, query_for)
-                    elif isinstance(action_metadata, list) and action_metadata:
-                        # List of results
-                        data = action_metadata[0]
-                        action = data.get("action", text)
-                        metadata = data.get("metadata", {})
-                        query_for = data.get("query_for", "")
-                        extracted.append({
-                            "tag": "action",
-                            "action": action,
-                            "metadata": metadata,
-                            "query_for": query_for,
-                        })
-                        logger.debug("[Memory] _process_buffer() [{}] extracted action: {}, metadata: {}", call_id, action, metadata)
+
+                    # Check if it's the new triple format (subject/relation/object) or old action/metadata format
+                    triples_data = None
+                    if isinstance(action_metadata, list) and action_metadata:
+                        first = action_metadata[0]
+                        if "subject" in first and "relation" in first and "object" in first:
+                            # New triple format
+                            triples_data = action_metadata
+                            # For vector storage, use subject+relation+object as action
+                            first_triple = action_metadata[0]
+                            action = f"{first_triple.get('subject', '')} {first_triple.get('relation', '')} {first_triple.get('object', '')}"
+                            metadata = {"subject": first_triple.get("subject", ""), "relation": first_triple.get("relation", ""), "object": first_triple.get("object", "")}
+                            extracted.append({
+                                "tag": "triple",
+                                "action": action,
+                                "metadata": metadata,
+                            })
+                            logger.debug("[Memory] _process_buffer() [{}] extracted triple: {}", call_id, metadata)
+                        else:
+                            # Old action-metadata format
+                            data = action_metadata[0]
+                            action = data.get("action", text)
+                            metadata = data.get("metadata", {})
+                            extracted.append({
+                                "tag": "action",
+                                "action": action,
+                                "metadata": metadata,
+                            })
+                    elif isinstance(action_metadata, dict) and action_metadata:
+                        if "subject" in action_metadata:
+                            # Single triple
+                            triples_data = [action_metadata]
+                            action = f"{action_metadata.get('subject', '')} {action_metadata.get('relation', '')} {action_metadata.get('object', '')}"
+                            metadata = {"subject": action_metadata.get("subject", ""), "relation": action_metadata.get("relation", ""), "object": action_metadata.get("object", "")}
+                            extracted.append({
+                                "tag": "triple",
+                                "action": action,
+                                "metadata": metadata,
+                            })
+                        else:
+                            # Old action-metadata format
+                            action = action_metadata.get("action", text)
+                            metadata = action_metadata.get("metadata", {})
+                            extracted.append({
+                                "tag": "action",
+                                "action": action,
+                                "metadata": metadata,
+                            })
                     else:
                         logger.debug("[Memory] _process_buffer() [{}] empty result, using fallback", call_id)
                         extracted.append({"tag": "未分类", "action": text, "metadata": {}})
@@ -306,6 +327,27 @@ class MemorySystem:
                     facts=json.dumps([action])      # 存储 action
                 )
                 logger.debug("[Memory] _process_buffer() added memory_node id: {}, action: {}", memory_node_id, action)
+
+                # 3.5 提取并存储三元组到 relationships 表
+                if llm is not None:
+                    try:
+                        triples = llm.extract_triples(raw_text)
+                        logger.debug("[Memory] _process_buffer() extracted {} triples from: {}", len(triples) if triples else 0, raw_text[:50])
+                        if triples and isinstance(triples, list):
+                            for triple in triples:
+                                head = triple.get("subject", "").strip()
+                                relation = triple.get("relation", "").strip()
+                                tail = triple.get("object", "").strip()
+                                if head and relation and tail:
+                                    self.relation_store.upsert_relation(
+                                        head=head,
+                                        relation=relation,
+                                        tail=tail,
+                                        ref_id=memory_node_id
+                                    )
+                                    logger.debug("[Memory] _process_buffer() stored triple: ({}, {}, {})", head, relation, tail)
+                    except Exception as e:
+                        logger.warning("[Memory] _process_buffer() failed to extract triples: {}", e)
 
                 # 4. 存入向量库
                 # - documents: action (用于向量匹配)

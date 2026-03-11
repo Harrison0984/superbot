@@ -351,23 +351,19 @@ class SuperbotLLMAdapter:
             except Exception:
                 pass
 
-        # Optimized prompt for action extraction
-        return """Extract action and metadata from text.
+        # Prompt for triple extraction: (subject, relation, object)
+        return """Extract knowledge triples from text.
+Extract (subject, relation, object) format triples.
 
 Context shows conversation history with [USER] and [ASSISTANT] roles.
 {context}
 Text: {text}
 
-Action types:
-- "remember": memorize/remember something
-- "rename": when someone gives a name
-- "query": when searching for info
-- "get-info": when asking a question
-- "query-past": when asking about past info (e.g., "我叫什么？" = what is my name)
+Examples:
+- "你记住小白兔是白色" -> [{{"subject": "小白兔", "relation": "颜色", "object": "白色"}}]
+- "我叫包子" -> [{{"subject": "我", "relation": "名字", "object": "包子"}}]
 
-For "get-info" and "query-past", also extract what to search for in "query_for".
-
-Output: {{\"action\": \"\", \"metadata\": {{}}, \"query_for\": \"\"}}"""
+Output as JSON array: [{{"subject": "", "relation": "", "object": ""}}]"""
 
     def _deduplicate_pairs(self, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove duplicate pairs based on action."""

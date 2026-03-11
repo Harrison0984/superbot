@@ -38,8 +38,8 @@ class LocalMLXProvider(LLMProvider):
     def generate(self, prompt: str, **kwargs) -> str:
         import mlx_lm
         max_tokens = kwargs.get("max_tokens", self.default_max_tokens)
-        temperature = kwargs.get("temperature", self.default_temperature)
-        return mlx_lm.generate(self.model, self.tokenizer, prompt=prompt, max_tokens=max_tokens, temperature=temperature)
+        # mlx_lm.generate doesn't accept temperature kwarg, use default
+        return mlx_lm.generate(self.model, self.tokenizer, prompt=prompt, max_tokens=max_tokens, verbose=False)
 
     def extract_triples(self, text: str, max_tokens: int = 256) -> List[Dict[str, Any]]:
         prompt = f"""<|im_start|>system
