@@ -352,19 +352,18 @@ class SuperbotLLMAdapter:
                 pass
 
         # Prompt for triple extraction with per-triple summary
-        return """Extract knowledge triples with individual summaries.
-Output format: [{{"subject": "", "relation": "", "object": "", "summary": ""}}]
+        return """Extract knowledge triples from conversation.
+Output: a JSON array with keys: subject, relation, object, summary
 
+Conversation: {context}
 Text: {text}
 
 Rules:
-- Extract ALL factual triples from the text
-- Each triple MUST have its own summary
-- Summary should be "subject + object" (e.g., "我1", "你2", "小白兔白色")
-- Keep summary very short (max 6 chars)
-- For compound sentences, extract multiple triples with separate summaries
+- subject: use "self" for the user (我), "you" for assistant (你)
+- Extract factual triples: (subject, relation, object)
+- Add short summary for each triple
 
-Output: [{{"subject": "", "relation": "", "object": "", "summary": ""}}]"""
+Output: []"""
 
     def _deduplicate_pairs(self, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove duplicate pairs based on action."""

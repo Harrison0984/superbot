@@ -237,8 +237,38 @@ class MemorySystem:
                     logger.debug("[Memory] _process_buffer() [{}] raw result type: {}, value: {}", call_id, type(action_metadata).__name__, action_metadata)
                     logger.debug("[Memory] _process_buffer() [{}] is list: {}, is truthy: {}", call_id, isinstance(action_metadata, list), bool(action_metadata))
 
+                    # New format: single dict with "triple": [subject, relation, object]
+                    if isinstance(action_metadata, dict) and "triple" in action_metadata:
+                        triple_list = action_metadata.get("triple", [])
+                        if len(triple_list) >= 3:
+                            subject, relation, obj = triple_list[0], triple_list[1], triple_list[2]
+                            triple_summary = action_metadata.get("summary", "")
+                            action = triple_summary if triple_summary else f"{subject} {relation} {obj}"
+                            triple_data = {"subject": subject, "relation": relation, "object": obj, "summary": triple_summary}
+                            metadata = {"triples": [triple_data], "summary": triple_summary}
+                            extracted.append({
+                                "tag": "triple",
+                                "action": action,
+                                "metadata": metadata,
+                            })
+                            logger.debug("[Memory] _process_buffer() [{}] extracted 1 triple with summary: {}", call_id, triple_summary)
+                    # New format: single dict with subject, relation/predicate, object, summary
+                    elif isinstance(action_metadata, dict) and "subject" in action_metadata and "summary" in action_metadata:
+                        triple = action_metadata
+                        triple_summary = triple.get("summary", "")
+                        subject = triple.get("subject", "")
+                        relation = triple.get("relation", "") or triple.get("predicate", "")
+                        obj = triple.get("object", "")
+                        action = triple_summary if triple_summary else f"{subject} {relation} {obj}"
+                        metadata = {"triples": [triple], "summary": triple_summary}
+                        extracted.append({
+                            "tag": "triple",
+                            "action": action,
+                            "metadata": metadata,
+                        })
+                        logger.debug("[Memory] _process_buffer() [{}] extracted 1 triple with summary: {}", call_id, triple_summary)
                     # New format: list of {"subject": ..., "relation": ..., "object": ..., "summary": ...}
-                    if isinstance(action_metadata, list) and action_metadata:
+                    elif isinstance(action_metadata, list) and action_metadata:
                         first = action_metadata[0]
                         if isinstance(first, dict) and "subject" in first and "summary" in first:
                             # New format: each triple has its own summary
@@ -246,7 +276,7 @@ class MemorySystem:
                             for triple in action_metadata:
                                 triple_summary = triple.get("summary", "")
                                 subject = triple.get("subject", "")
-                                relation = triple.get("relation", "")
+                                relation = triple.get("relation", "") or triple.get("predicate", "")
                                 obj = triple.get("object", "")
                                 # Use triple's own summary as action
                                 action = triple_summary if triple_summary else f"{subject} {relation} {obj}"
@@ -502,6 +532,11 @@ class MemorySystem:
         results = self.recall(query, top_n=top_n)
         lines = []
 
+        # 0. Add instruction to prioritize facts
+        if results.get("facts") or results.get("relations"):
+            lines.append("IMPORTANT: Prioritize the facts below when answering.")
+            lines.append("")
+
         # 1. Format semantic facts
         facts = results.get("facts", [])
         if facts:
@@ -550,6 +585,24 @@ class MemorySystem:
         if metadata_entries:
             lines.append("## Action Metadata")
             lines.extend(metadata_entries[:5])
+
+        # 2. Format relations from relationships table
+        relations = results.get("relations", [])
+        if relations:
+            lines.append("")
+            lines.append("## Knowledge Graph Relations")
+            # Group by subject
+            subject_relations = {}
+            for rel in relations:
+                head = rel.get("head", "")
+                relation = rel.get("relation", "")
+                tail = rel.get("tail", "")
+                if head:
+                    if head not in subject_relations:
+                        subject_relations[head] = []
+                    subject_relations[head].append(f"{relation} {tail}")
+            for subject, rels in subject_relations.items():
+                lines.append(f"- {subject}: {', '.join(rels)}")
 
         lines.append("")  # Blank line separator
 
