@@ -48,10 +48,10 @@ class MemorySystem:
 
         # Initialize storage layer (unified in data directory)
         self.vector_store = VectorStore(
-            persist_directory=os.path.join(data_dir, "chroma")
+            persist_directory=os.path.join(self.data_dir, "chroma")
         )
         self.relation_store = EnhancedRelationStore(
-            db_path=os.path.join(data_dir, "memmory.db")
+            db_path=os.path.join(self.data_dir, "memmory.db")
         )
 
         # Initialize input processing pipeline components
