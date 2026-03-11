@@ -237,31 +237,28 @@ class MemorySystem:
                     logger.debug("[Memory] _process_buffer() [{}] raw result type: {}, value: {}", call_id, type(action_metadata).__name__, action_metadata)
                     logger.debug("[Memory] _process_buffer() [{}] is list: {}, is truthy: {}", call_id, isinstance(action_metadata, list), bool(action_metadata))
 
-                    # New format: {"triples": [...], "summary": "..."}
-                    if isinstance(action_metadata, dict) and "triples" in action_metadata:
-                        triples_list = action_metadata.get("triples", [])
-                        summary = action_metadata.get("summary", "")
-                        # Use summary for vector storage if available, otherwise use first triple
-                        if summary:
-                            action = summary
-                        elif triples_list:
-                            first_triple = triples_list[0]
-                            action = f"{first_triple.get('subject', '')} {first_triple.get('relation', '')} {first_triple.get('object', '')}"
-                        else:
-                            action = text
-                        # Store all triples in metadata
-                        metadata = {"triples": triples_list, "summary": summary}
-                        extracted.append({
-                            "tag": "triple",
-                            "action": action,
-                            "metadata": metadata,
-                        })
-                        logger.debug("[Memory] _process_buffer() [{}] extracted {} triples, summary: {}", call_id, len(triples_list), summary)
-                    # Old list format: [{"subject": ..., "relation": ..., "object": ...}]
-                    elif isinstance(action_metadata, list) and action_metadata:
+                    # New format: list of {"subject": ..., "relation": ..., "object": ..., "summary": ...}
+                    if isinstance(action_metadata, list) and action_metadata:
                         first = action_metadata[0]
-                        if "subject" in first and "relation" in first and "object" in first:
-                            # List of triples
+                        if isinstance(first, dict) and "subject" in first and "summary" in first:
+                            # New format: each triple has its own summary
+                            # Create separate entry for each triple
+                            for triple in action_metadata:
+                                triple_summary = triple.get("summary", "")
+                                subject = triple.get("subject", "")
+                                relation = triple.get("relation", "")
+                                obj = triple.get("object", "")
+                                # Use triple's own summary as action
+                                action = triple_summary if triple_summary else f"{subject} {relation} {obj}"
+                                metadata = {"triples": [triple], "summary": triple_summary}
+                                extracted.append({
+                                    "tag": "triple",
+                                    "action": action,
+                                    "metadata": metadata,
+                                })
+                            logger.debug("[Memory] _process_buffer() [{}] extracted {} triples with individual summaries", call_id, len(action_metadata))
+                        elif isinstance(first, dict) and "subject" in first and "relation" in first and "object" in first:
+                            # Old format: list of triples without individual summaries
                             first_triple = action_metadata[0]
                             action = f"{first_triple.get('subject', '')} {first_triple.get('relation', '')} {first_triple.get('object', '')}"
                             metadata = {"triples": action_metadata, "summary": ""}
@@ -310,42 +307,70 @@ class MemorySystem:
             else:
                 extracted.append({"tag": "未分类", "action": text, "metadata": {}})
 
-        # 存储：raw_logs → memory_nodes → vector_store (action + metadata)
-        for i, item in enumerate(batch_items):
-            raw_text = item["text"]
-            vector = item["vector"].tolist()
+        # 存储：每个 extracted 项单独存储 (一个输入可能产生多个 triple)
+        import json
 
-            if i < len(extracted):
-                data = extracted[i]
-                logger.debug("[Memory] _process_buffer() data for i={}: {}", i, data)
-                action = data.get("action", raw_text)  # 核心动作，用于向量化
-                metadata = data.get("metadata", {})      # 属性，用于过滤
+        # 先为每个输入创建 raw_log
+        raw_ids = []
+        for item in batch_items:
+            raw_text = item["text"]
+            raw_id = self.relation_store.add_raw_log(
+                content=raw_text,
+                source="memory",
+                incremental_density=None
+            )
+            raw_ids.append(raw_id)
+            logger.debug("[Memory] _process_buffer() added raw_log id: {}", raw_id)
+
+        # 为每个 extracted 项创建 memory_node
+        extracted_idx = 0
+        for batch_idx, item in enumerate(batch_items):
+            raw_text = item["text"]
+            original_vector = item["vector"].tolist()
+            raw_id = raw_ids[batch_idx]
+
+            # 处理该 batch 对应的所有 extracted (可能有多个 triple)
+            while extracted_idx < len(extracted):
+                data = extracted[extracted_idx]
+                extracted_idx += 1
+
+                action = data.get("action", raw_text)
+                metadata = data.get("metadata", {})
                 tag = data.get("tag", "action")
 
-                # 1. 存储原始日志
-                raw_id = self.relation_store.add_raw_log(
-                    content=raw_text,
-                    source="memory",
-                    incremental_density=None
-                )
-                logger.debug("[Memory] _process_buffer() added raw_log id: {}", raw_id)
+                # 跳过未分类的
+                if tag == "未分类":
+                    vector_id = str(uuid.uuid4())
+                    memory_node_id = self.relation_store.add_memory_node(
+                        raw_id=raw_id,
+                        tag="raw",
+                        summary=raw_text[:50],
+                        vector_id=vector_id,
+                        entities=json.dumps({}),
+                        facts=json.dumps([raw_text])
+                    )
+                    store_metadata = {"tag": "raw", "memory_node_id": str(memory_node_id)}
+                    self.vector_store.add(
+                        ids=[vector_id],
+                        vectors=[original_vector],
+                        documents=[raw_text],
+                        metadatas=[store_metadata]
+                    )
+                    continue
 
-                # 2. 生成 vector_id (使用 UUID)
+                # 存储 triple
                 vector_id = str(uuid.uuid4())
-
-                # 3. 存储记忆节点
-                import json
                 memory_node_id = self.relation_store.add_memory_node(
                     raw_id=raw_id,
                     tag=tag,
-                    summary=action,  # 使用 action 作为 summary
+                    summary=action,
                     vector_id=vector_id,
-                    entities=json.dumps(metadata),  # 存储 metadata
-                    facts=json.dumps([action])      # 存储 action
+                    entities=json.dumps(metadata),
+                    facts=json.dumps([action])
                 )
                 logger.debug("[Memory] _process_buffer() added memory_node id: {}, action: {}", memory_node_id, action)
 
-                # 3.5 存储三元组到 relationships 表 (从 metadata 提取)
+                # 存储三元组到 relationships 表
                 triples_from_meta = metadata.get("triples", [])
                 if triples_from_meta:
                     for triple in triples_from_meta:
@@ -361,18 +386,24 @@ class MemorySystem:
                             )
                             logger.debug("[Memory] _process_buffer() stored triple: ({}, {}, {})", head, relation, tail)
 
-                # 4. 存入向量库
-                # - documents: action (用于向量匹配)
-                # - metadata: 包含所有属性用于过滤
-                store_metadata = {"tag": tag, "memory_node_id": memory_node_id}
-                store_metadata.update(metadata)  # 添加所有过滤属性
+                # 存入向量库 (ChromaDB metadata 只支持简单类型)
+                store_metadata = {"tag": tag, "memory_node_id": str(memory_node_id)}
+                # 把复杂 metadata 转成 JSON 字符串
+                if metadata:
+                    store_metadata["metadata_json"] = json.dumps(metadata)
+                    # 同时提取关键字段用于检索
+                    if triples_from_meta and len(triples_from_meta) > 0:
+                        first_triple = triples_from_meta[0]
+                        store_metadata["subject"] = first_triple.get("subject", "")
+                        store_metadata["relation"] = first_triple.get("relation", "")
+                        store_metadata["object"] = first_triple.get("object", "")
                 self.vector_store.add(
                     ids=[vector_id],
-                    vectors=[vector],
+                    vectors=[original_vector],
                     documents=[action],
                     metadatas=[store_metadata]
                 )
-                logger.debug("[Memory] _process_buffer() added vector_store id: {}, metadata: {}", vector_id, metadata)
+                logger.debug("[Memory] _process_buffer() added vector_store id: {}, action: {}", vector_id, action)
 
         logger.debug("[Memory] _process_buffer() completed for {} items", len(batch_items))
 

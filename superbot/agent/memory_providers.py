@@ -351,21 +351,20 @@ class SuperbotLLMAdapter:
             except Exception:
                 pass
 
-        # Prompt for triple extraction with summary
-        return """Extract knowledge triples and generate a concise summary.
-Output format: {{"triples": [{{"subject": "", "relation": "", "object": ""}}], "summary": ""}}
+        # Prompt for triple extraction with per-triple summary
+        return """Extract knowledge triples with individual summaries.
+Output format: [{{"subject": "", "relation": "", "object": "", "summary": ""}}]
 
 Text: {text}
 
 Rules:
 - Extract ALL factual triples from the text
-- Split compound sentences by comma or Chinese punctuation
-- For "我是X" or "我叫X", extract triple (我, 是/叫, X)
-- For "你是X", extract triple (你, 是/叫, X)
-- Use Chinese relation words: 是, 叫, 名字, 颜色, 爱好, etc.
-- Generate a concise summary (max 20 chars) for semantic search
+- Each triple MUST have its own summary
+- Summary should be "subject + object" (e.g., "我1", "你2", "小白兔白色")
+- Keep summary very short (max 6 chars)
+- For compound sentences, extract multiple triples with separate summaries
 
-Output: {{"triples": [], "summary": ""}}"""
+Output: [{{"subject": "", "relation": "", "object": "", "summary": ""}}]"""
 
     def _deduplicate_pairs(self, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove duplicate pairs based on action."""
