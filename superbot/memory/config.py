@@ -166,7 +166,7 @@ class Config(BaseModel):
     占位符:
     - {text}: 待提取的文本
     """
-    summary_triples_max_tokens: int = 1024
+    summary_triples_max_tokens: int = 2048
     """
     摘要+三元组提取的最大 token 数
     """
