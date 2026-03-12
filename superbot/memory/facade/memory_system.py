@@ -275,7 +275,7 @@ class MemorySystem:
 
         try:
             # 调用 LLM generate 方法
-            # SuperbotLLMAdapter 有 generate 方法
+            # mlx_lm.generate 不支持 temperature 参数
             response = llm.generate(prompt, max_tokens=max_tokens)
             logger.debug("[Memory] _extract_summary_and_triples() LLM response: {}", response[:200])
 
