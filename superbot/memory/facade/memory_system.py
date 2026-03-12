@@ -697,6 +697,101 @@ Format:
 
         return results
 
+    def recall_2(self, query_text: str, summary: str, similarity_threshold: float = 0.9) -> Dict[str, Any]:
+        """
+        检索记忆 v2 - 基于摘要检索
+
+        参数:
+            query_text: 查询文本
+            summary: 摘要（用于检索）
+            similarity_threshold: 相似度阈值，默认 0.9
+
+        返回:
+            包含 triples（三元组语句列表）的字典
+        """
+        logger.debug("[Memory] recall_2() called with query: {}, summary: {}", query_text[:100], summary[:100])
+
+        if not self._embedding:
+            logger.warning("[Memory] recall_2() no embedding provider")
+            return {"triples": [], "query": query_text}
+
+        # 1. 向量化 summary 和 query_text
+        summary_vector = self._embedding.encode(summary).tolist()
+        query_vector = self._embedding.encode(query_text).tolist()
+
+        # 2. 计算相似度
+        from datetime import datetime
+        import numpy as np
+
+        similarity = np.dot(summary_vector, query_vector) / (np.linalg.norm(summary_vector) * np.linalg.norm(query_vector) + 1e-8)
+        logger.debug("[Memory] recall_2() summary vs query_text similarity: {:.4f}", similarity)
+
+        # 3. 如果相似度 < 0.8，从 query_summary 集合查询最接近的 summary
+        used_summary = summary
+        if similarity < 0.8:
+            query_summary_results = self.vector_store.search(
+                query_vector=summary_vector,
+                n=1,
+                collection="query_summary"
+            )
+
+            if query_summary_results and query_summary_results[0].get("similarity", 0) > similarity:
+                used_summary = query_summary_results[0].get("document", "")
+                logger.debug("[Memory] recall_2() found better summary: {}", used_summary[:50])
+                # 使用找到的 summary 向量
+                summary_vector = self._embedding.encode(used_summary).tolist()
+
+        # 4. 保存当前 summary 到 query_summary 集合
+        save_id = str(uuid.uuid4())
+        self.vector_store.add(
+            ids=[save_id],
+            vectors=[summary_vector],
+            documents=[used_summary],
+            metadatas=[{"timestamp": datetime.now().isoformat()}],
+            collection="query_summary"
+        )
+        logger.debug("[Memory] recall_2() saved summary to query_summary: {}", save_id)
+
+        # 5. 查询 user_actions 集合
+        vector_results = self.vector_store.search(
+            query_vector=summary_vector,
+            n=10,
+            collection="user_actions"
+        )
+
+        logger.debug("[Memory] recall_2() vector results: {}", len(vector_results))
+
+        # 6. 过滤匹配度 > threshold 的结果，并查询 action_objects 组合成完整三元组
+        triples = []
+
+        for result in vector_results:
+            if result.get("similarity", 0) <= similarity_threshold:
+                continue
+
+            vector_id = result.get("id")
+            action_obj = self.relation_store.get_action_object(vector_id)
+            if action_obj:
+                subject = action_obj.get("subject", "")
+                relation = action_obj.get("relation", "")
+                obj = action_obj.get("object", "")
+
+                triples.append({
+                    "subject": subject,
+                    "relation": relation,
+                    "object": obj,
+                    "triple_text": f"{subject} {relation} {obj}" if obj else f"{subject} {relation}",
+                    "similarity": result.get("similarity", 0),
+                    "vector_id": vector_id
+                })
+
+        logger.debug("[Memory] recall_2() returning {} triples", len(triples))
+
+        return {
+            "triples": triples,
+            "query": query_text,
+            "summary": used_summary
+        }
+
     def get_memory_context(self, query: str, top_n: int = 5) -> str:
         """获取格式化后的记忆上下文，用于 system prompt。
 
