@@ -283,8 +283,11 @@ class MemorySystem:
             summary = ""
             triples = []
 
-            # 提取摘要
-            summary_match = re.search(r'摘要[：:]\s*(.+?)(?=三元组|$)', response, re.DOTALL)
+            # 提取摘要 - 兼容 V1 和 V2 格式
+            # V1: 摘要：xxx 三元组：...
+            # V2: 摘要：xxx\n三元组：[...]
+            # 也兼容没有"摘要："前缀的情况
+            summary_match = re.search(r'(?:摘要[：:]\s*)?(.+?)(?=\n三元组|三元组\[|$)', response, re.DOTALL)
             if summary_match:
                 summary = summary_match.group(1).strip()
                 # 清理摘要中的思考过程残留
