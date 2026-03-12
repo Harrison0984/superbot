@@ -217,11 +217,21 @@ if __name__ == "__main__":
 
 
 def extract_triples_only(text: str) -> list:
-    """仅提取三元组"""
+    """仅提取三元组 - 使用 V2 强约束 prompt"""
     logger.info(f"[仅三元组] 输入文本 ({len(text)}字): {text[:30]}...")
 
+    # 使用 V2 强约束 prompt
     prompt = f'''<|im_start|>system
-提取三元组，格式：[{{"s":"主语","r":"关系","o":"宾语"}}]
+你是一个严格的事实提取助手。只提取用户输入中明确提到的信息，不要添加任何额外信息。
+如果输入中没有提及的信息，绝对不要编造。
+
+规则：
+1. 只提取输入文本中明确存在的实体和关系
+2. 不要解释、扩展或补充任何不存在的内容
+3. 如果不确定或信息不足，返回空三元组
+
+输出格式（必须严格按格式）：
+三元组：[{{"s":"主语","r":"关系","o":"宾语"}}]，如果无信息则输出[]
 <|im_end|>
 <|im_start|>user
 {text}
@@ -271,18 +281,27 @@ def extract_triples_only(text: str) -> list:
 
 
 def extract_summary_only(text: str) -> str:
-    """仅提取摘要"""
+    """仅提取摘要 - 使用 V2 强约束 prompt"""
     logger.info(f"[仅摘要] 输入文本 ({len(text)}字): {text[:30]}...")
 
-    # 优化: 强制跳过思考
+    # 使用 V2 强约束 prompt
     prompt = f'''<|im_start|>system
-Output ONLY the summary, no thinking.
+你是一个严格的事实提取助手。只提取用户输入中明确提到的信息，不要添加任何额外信息。
+如果输入中没有提及的信息，绝对不要编造。
+
+规则：
+1. 只提取输入文本中明确存在的信息
+2. 不要解释、扩展或补充任何不存在的内容
+3. 如果不确定或信息不足，返回简短说明
+
+输出格式：
+摘要：[不超过50字的摘要，只描述输入中明确存在的信息]
 <|im_end|>
 <|im_start|>user
-压缩成简短摘要，不超过200字：{text}
+{text}
 <|im_end|>
 <|im_start|>assistant
-'''
+摘要：'''
 
     start_time = time.time()
     response = mlx_lm.generate(
