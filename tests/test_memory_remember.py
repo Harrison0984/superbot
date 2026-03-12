@@ -68,11 +68,28 @@ class MockLLMProvider:
 
             # 提取实体 - 更健壮的解析
             triples = []
-            if "张三" in text or "李四" in text or "名字" in text:
+
+            # 喜欢/爱吃/爱吃等关系
+            like_match = re.search(r'喜欢(吃)?([^，,\s]+)', text)
+            if like_match:
+                obj = like_match.group(2) or ""
+                if obj:
+                    triples.append({"s": "我", "r": "喜欢", "o": obj})
+
+            # 讨厌/不喜欢
+            hate_match = re.search(r'讨肦|不喜欢|讨厌([^，,\s]+)', text)
+            if hate_match:
+                obj = hate_match.group(1) or ""
+                if obj:
+                    triples.append({"s": "我", "r": "讨厌", "o": obj})
+
+            # 名字相关
+            if "张三" in text or "李四" in text or "名字" in text or "我叫" in text:
                 name_match = re.search(r'叫([^，,\s]+)', text)
                 if name_match:
                     triples.append({"s": "我", "r": "叫", "o": name_match.group(1)})
 
+            # 老婆/妻子
             if "老婆" in text or "妻子" in text:
                 name_match = re.search(r'老婆[叫是]([^，,\s]+)', text)
                 if not name_match:
@@ -80,12 +97,17 @@ class MockLLMProvider:
                 if name_match:
                     triples.append({"s": "我", "r": "妻子是", "o": name_match.group(1)})
 
+            # 职业
             if "医生" in text:
                 triples.append({"s": "我老婆", "r": "是", "o": "医生"})
 
             if "工程师" in text:
                 triples.append({"s": "我", "r": "是", "o": "工程师"})
 
+            if "设计师" in text:
+                triples.append({"s": "我", "r": "是", "o": "设计师"})
+
+            # 地点
             if "上海" in text or "北京" in text or "深圳" in text:
                 loc_match = re.search(r'住在([^，,\s]+)', text)
                 if loc_match:
