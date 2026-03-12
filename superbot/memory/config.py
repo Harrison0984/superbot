@@ -143,14 +143,19 @@ class Config(BaseModel):
     # ==================== 摘要+三元组提取配置 ====================
 
     summary_triples_prompt: str = '''<|im_start|>system
-Output ONLY summary and triples, no thinking.
+你是一个用户信息提取助手。从用户输入中提取个人信息和事实三元组。
+规则：
+1. 提取所有关于用户本人、家人、朋友等人物的信息
+2. 包括：姓名、职业、爱好、地点、关系等
+3. 不要提取与用户无关的内容（如物品概念解释）
+4. 输出JSON格式的三元组
+
 Format:
 摘要：<summary>
 三元组：[{{"s":"subject","r":"relation","o":"object"}}]
 <|im_end|>
 <|im_start|>user
-1. 压缩成简短摘要，不超过200字
-2. 提取三元组：{text}
+提取用户信息：{text}
 <|im_end|>
 <|im_start|>assistant
 摘要：'''
