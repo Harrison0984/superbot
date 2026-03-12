@@ -22,9 +22,29 @@ from superbot.memory.storage.relation_store import RelationStore
 os.environ["LOGURU_LEVEL"] = "DEBUG"
 
 
+def get_real_llm():
+    """获取真实的 LLM provider (MLX)"""
+    from superbot.memory.models.providers import LocalMLXProvider
+    from mlx_lm import load
+
+    model_path = "/Users/heyunpeng/workstation/src/models/Qwen3-8B-Instruct-4bit"
+    model, tokenizer = load(model_path)
+
+    return LocalMLXProvider(model, tokenizer)
+
+
 @pytest.fixture
 def memory_system():
     """创建测试用的 MemorySystem"""
+    return create_memory_system(use_real_llm=False)
+
+
+def create_memory_system(use_real_llm: bool = False):
+    """创建 MemorySystem 实例
+
+    参数:
+        use_real_llm: 是否使用真实的 LLM
+    """
     # 初始化配置
     config = Config()
     config.chroma_persist_dir = "./data/test_chroma"
@@ -41,8 +61,12 @@ def memory_system():
     )
     ms.set_embedding(embedding)
 
-    # 设置 LLM provider (mock)
-    ms._llm = MockLLMProvider()
+    # 设置 LLM provider
+    if use_real_llm:
+        print("使用真实 LLM (MLX)")
+        ms._llm = get_real_llm()
+    else:
+        ms._llm = MockLLMProvider()
 
     return ms
 
@@ -243,6 +267,7 @@ def main():
     parser = argparse.ArgumentParser(description="Memory System 测试")
     parser.add_argument("--interactive", "-i", action="store_true", help="启用交互模式")
     parser.add_argument("--cleanup", "-c", action="store_true", help="清理测试数据后退出")
+    parser.add_argument("--real-llm", "-r", action="store_true", help="使用真实 LLM (MLX)")
     args = parser.parse_args()
 
     if args.cleanup:
@@ -256,19 +281,7 @@ def main():
     cleanup()
 
     # 初始化 MemorySystem
-    config = Config()
-    config.chroma_persist_dir = "./data/test_chroma"
-    config.sqlite_path = "./data/test_memory.db"
-    ms = MemorySystem(config=config, data_dir="./data/test")
-
-    # 设置 embedding provider
-    from superbot.agent.memory_providers import SuperbotEmbeddingAdapter
-    embedding = SuperbotEmbeddingAdapter(
-        model_path="/Users/heyunpeng/workstation/src/nomic-embed-text-v1.5",
-        trust_remote_code=True
-    )
-    ms.set_embedding(embedding)
-    ms._llm = MockLLMProvider()
+    ms = create_memory_system(use_real_llm=args.real_llm)
 
     if args.interactive:
         # 交互模式 - 测试 remember_2
