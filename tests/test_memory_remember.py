@@ -169,29 +169,6 @@ def test_recall_2(memory_system: MemorySystem):
             print(f"  - {t.get('triple_text')} (相似度: {t.get('similarity', 0):.4f})")
 
 
-def test_query_summary_collection(memory_system: MemorySystem):
-    """测试 query_summary 集合"""
-    print("\n" + "=" * 60)
-    print("测试 query_summary 集合")
-    print("=" * 60)
-
-    # 写入一些 query_summary
-    test_queries = [
-        ("我老婆是谁", "张三的妻子是李梅是一名医生"),
-        ("我叫什么", "我叫张三是一名工程师"),
-    ]
-
-    for query, summary in test_queries:
-        print(f"\n写入: query={query}, summary={summary}")
-        result = memory_system.recall_2(query, summary)
-        print(f"使用的摘要: {result.get('summary', '')}")
-
-    # 检查集合
-    print("\n--- query_summary 集合 ---")
-    count = memory_system.vector_store.count(collection="query_summary")
-    print(f"向量数量: {count}")
-
-
 def cleanup():
     """清理测试数据"""
     import shutil
