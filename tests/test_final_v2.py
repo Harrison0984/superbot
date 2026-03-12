@@ -1,4 +1,4 @@
-"""三元组提取 + 摘要 - 优化最终版 v2 (性能对比测试)"""
+"""三元组提取 + 摘要 - 优化最终版 v2 (幻觉优化测试)"""
 import time
 import sys
 import json
@@ -21,6 +21,199 @@ logger = logging.getLogger(__name__)
 logger.info("加载模型...")
 model, tokenizer = load(MODEL_PATH)
 logger.info("模型加载完成\n")
+
+
+# ==================== 优化后的 Prompt（减少幻觉） ====================
+
+# Prompt V1: 基础版本（当前使用）
+PROMPT_V1 = '''<|im_start|>system
+Output ONLY summary and triples, no thinking.
+Format:
+摘要：<summary>
+三元组：[{{"s":"subject","r":"relation","o":"object"}}]
+<|im_end|>
+<|im_start|>user
+1. 压缩成简短摘要，不超过200字
+2. 提取三元组：{text}
+<|im_end|>
+<|im_start|>assistant
+摘要：'''
+
+# Prompt V2: 更强的约束，减少幻觉
+PROMPT_V2 = '''<|im_start|>system
+你是一个严格的事实提取助手。只提取用户输入中明确提到的信息，不要添加任何额外信息。
+如果输入中没有提及的信息，绝对不要编造。
+
+规则：
+1. 只提取输入文本中明确存在的实体和关系
+2. 不要解释、扩展或补充任何不存在的内容
+3. 如果不确定或信息不足，返回空三元组
+
+输出格式（必须严格按格式）：
+摘要：[不超过50字的摘要，只描述输入中明确存在的信息]
+三元组：[{{"s":"主语","r":"关系","o":"宾语"}}]，如果无信息则输出[]
+<|im_end|>
+<|im_start|>user
+{text}
+<|im_end|>
+<|im_start|>assistant
+摘要：'''
+
+# Prompt V3: 更简洁的格式
+PROMPT_V3 = '''<|im_start|>system
+从用户输入中提取事实三元组。只输出明确提到的内容，不添加任何信息。
+<|im_end|>
+<|im_start|>user
+{text}
+<|im_end|>
+<|im_start|>assistant
+['''
+
+
+def extract_with_prompt(text: str, prompt_template: str, max_tokens: int = 512) -> tuple:
+    """使用指定 prompt 提取摘要和三元组"""
+    prompt = prompt_template.format(text=text)
+
+    start_time = time.time()
+    response = mlx_lm.generate(
+        model, tokenizer,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        verbose=False
+    )
+    elapsed = time.time() - start_time
+
+    # 解析响应
+    summary = ""
+    triples = []
+
+    # 清理思考过程
+    if '<think>' in response:
+        clean_response = response.split('<think>')[-1].strip()
+    else:
+        clean_response = response
+
+    # 尝试匹配 "摘要：xxx 三元组"
+    summary_match = re.search(r'摘要[：:]\s*(.+?)\s*三元组', clean_response, re.DOTALL)
+    if summary_match:
+        summary = summary_match.group(1).strip()
+
+    # 提取三元组
+    triple_match = re.search(r'三元组[：:]?\s*(\[.*?\])', clean_response, re.DOTALL)
+    if triple_match:
+        try:
+            triples = json.loads(triple_match.group(1))
+        except:
+            try:
+                objs = re.findall(r'\{[^{}]*\}', triple_match.group(1))
+                for o in objs:
+                    try:
+                        t = json.loads(o)
+                        if 's' in t and 'r' in t:
+                            triples.append(t)
+                    except:
+                        pass
+            except:
+                pass
+
+    return summary, triples, elapsed, response
+
+
+def test_prompt_versions():
+    """测试不同 prompt 版本的效果"""
+    test_texts = [
+        "我叫包子",
+        "我爱吃葡萄",
+        "我老婆叫花卷，是一名医生",
+        "今天天气真好",
+        "我老婆叫李梅，是一名医生，我们住在上海",
+    ]
+
+    versions = [
+        ("V1 (基础)", PROMPT_V1),
+        ("V2 (强约束)", PROMPT_V2),
+        ("V3 (简洁)", PROMPT_V3),
+    ]
+
+    for text in test_texts:
+        logger.info("=" * 70)
+        logger.info(f"输入: {text}")
+        logger.info("=" * 70)
+
+        for name, prompt in versions:
+            logger.info(f"\n--- {name} ---")
+            summary, triples, elapsed, raw = extract_with_prompt(text, prompt)
+            logger.info(f"耗时: {elapsed:.2f}秒")
+            logger.info(f"摘要: {summary[:50] if summary else '(无)'}")
+            logger.info(f"三元组: {triples}")
+            logger.info(f"原始输出: {raw[:200]}...")
+        logger.info("")
+
+
+def test_max_tokens():
+    """测试不同 max_tokens 的效果"""
+    test_texts = [
+        "我爱吃葡萄",
+        "我老婆叫花卷，是一名医生",
+    ]
+
+    token_values = [256, 512, 1024]
+
+    for text in test_texts:
+        logger.info("=" * 70)
+        logger.info(f"输入: {text}")
+        logger.info("=" * 70)
+
+        for tokens in token_values:
+            logger.info(f"\n--- max_tokens={tokens} ---")
+            summary, triples, elapsed, raw = extract_with_prompt(text, PROMPT_V2, max_tokens=tokens)
+            logger.info(f"耗时: {elapsed:.2f}秒")
+            logger.info(f"摘要: {summary[:50] if summary else '(无)'}")
+            logger.info(f"三元组: {triples}")
+
+
+def test_system_prompt():
+    """测试不同的 system prompt 效果"""
+    prompts = [
+        ("无约束", PROMPT_V1),
+        ("强约束", PROMPT_V2),
+    ]
+
+    # 关键测试用例：容易产生幻觉的输入
+    hallucination_tests = [
+        "我爱吃葡萄",  # 可能被误解为其他
+        "我叫包子",  # 可能被解释为食物
+        "今天天气不错",  # 可能产生额外信息
+    ]
+
+    logger.info("=" * 70)
+    logger.info("幻觉测试")
+    logger.info("=" * 70)
+
+    for text in hallucination_tests:
+        for name, prompt in prompts:
+            summary, triples, elapsed, raw = extract_with_prompt(text, prompt, max_tokens=512)
+            logger.info(f"\n输入: {text}")
+            logger.info(f"Prompt: {name}")
+            logger.info(f"三元组: {triples}")
+            if not triples:
+                logger.warning(">>> 幻觉: 生成了不存在的三元组!" if triples else ">>> 正确: 无三元组")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Prompt 幻觉优化测试")
+    parser.add_argument("--test", choices=["prompt", "tokens", "hallucination", "all"], default="all")
+    args = parser.parse_args()
+
+    if args.test in ["prompt", "all"]:
+        test_prompt_versions()
+
+    if args.test in ["tokens", "all"]:
+        test_max_tokens()
+
+    if args.test in ["hallucination", "all"]:
+        test_system_prompt()
 
 
 def extract_triples_only(text: str) -> list:
