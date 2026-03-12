@@ -4,6 +4,11 @@ import sys
 import time
 import json
 import pytest
+import warnings
+
+# 过滤第三方库警告
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,6 +17,9 @@ from superbot.memory.config import Config
 from superbot.memory.facade.memory_system import MemorySystem
 from superbot.memory.storage.vector_store import VectorStore
 from superbot.memory.storage.relation_store import RelationStore
+
+# 配置日志 - 启用 DEBUG 级别
+os.environ["LOGURU_LEVEL"] = "DEBUG"
 
 
 @pytest.fixture
@@ -46,38 +54,44 @@ class MockLLMProvider:
         """生成文本"""
         # 简单提取三元组
         if "三元组" in prompt:
-            # 从 prompt 中提取关键信息
-            lines = prompt.split("\n")
-            text = ""
-            for line in lines:
-                if "提取三元组" in line or "1." in line:
-                    text = line.replace("提取三元组：", "").replace("1. 压缩成简短摘要", "").strip()
-                    break
+            # 从 prompt 中提取用户输入的原始文本
+            # prompt 格式: ...提取三元组：{text}...
+            import re
 
-            if not text:
-                for line in lines:
-                    if line.strip() and not line.startswith("<") and not line.startswith("1"):
-                        text = line.strip()
-                        break
+            # 尝试提取 "提取三元组：" 后面的内容
+            match = re.search(r'提取三元组[：:]\s*(.+?)(?:<|im_end|$)', prompt, re.DOTALL)
+            if match:
+                text = match.group(1).strip()
+            else:
+                # 提取最后一个自然段
+                text = prompt.split("\n")[-1].strip()
 
-            # 提取实体
+            # 提取实体 - 更健壮的解析
             triples = []
-            if "我叫" in text:
-                triples.append({"s": "我", "r": "叫", "o": text.split("叫")[1].split("，")[0].split("。")[0].strip()})
-            if "老婆" in text or "妻子" in text:
-                parts = text.split("，")
-                for p in parts:
-                    if "叫" in p:
-                        name = p.split("叫")[-1].strip()
-                        triples.append({"s": "我", "r": "妻子是", "o": name})
-            if "住在" in text or "住" in text:
-                parts = text.split("，")
-                for p in parts:
-                    if "住" in p:
-                        loc = p.replace("住在", "").replace("住", "").strip()
-                        triples.append({"s": "我们", "r": "住在", "o": loc})
+            if "张三" in text or "李四" in text or "名字" in text:
+                name_match = re.search(r'叫([^，,\s]+)', text)
+                if name_match:
+                    triples.append({"s": "我", "r": "叫", "o": name_match.group(1)})
 
-            summary = text[:50] if text else "摘要测试"
+            if "老婆" in text or "妻子" in text:
+                name_match = re.search(r'老婆[叫是]([^，,\s]+)', text)
+                if not name_match:
+                    name_match = re.search(r'妻子[叫是]([^，,\s]+)', text)
+                if name_match:
+                    triples.append({"s": "我", "r": "妻子是", "o": name_match.group(1)})
+
+            if "医生" in text:
+                triples.append({"s": "我老婆", "r": "是", "o": "医生"})
+
+            if "工程师" in text:
+                triples.append({"s": "我", "r": "是", "o": "工程师"})
+
+            if "上海" in text or "北京" in text or "深圳" in text:
+                loc_match = re.search(r'住在([^，,\s]+)', text)
+                if loc_match:
+                    triples.append({"s": "我们", "r": "住在", "o": loc_match.group(1)})
+
+            summary = f"用户信息：{text[:80]}"
             return f"摘要：{summary}\n三元组：{json.dumps(triples)}"
 
         return "测试回复"
