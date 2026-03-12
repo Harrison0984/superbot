@@ -268,24 +268,15 @@ class MemorySystem:
         返回:
             (summary, triples) 元组
         """
-        # 优化后的 prompt（跳过思考过程）
-        prompt = f'''<|im_start|>system
-Output ONLY summary and triples, no thinking.
-Format:
-摘要：<summary>
-三元组：[{{"s":"subject","r":"relation","o":"object"}}]
-<|im_end|>
-<|im_start|>user
-1. 压缩成简短摘要，不超过200字
-2. 提取三元组：{text}
-<|im_end|>
-<|im_start|>assistant
-摘要：'''
+        # 从配置获取 prompt
+        prompt_template = self.config.summary_triples_prompt
+        prompt = prompt_template.format(text=text)
+        max_tokens = self.config.summary_triples_max_tokens
 
         try:
             # 调用 LLM generate 方法
             # SuperbotLLMAdapter 有 generate 方法
-            response = llm.generate(prompt, max_tokens=512, temperature=0.3)
+            response = llm.generate(prompt, max_tokens=max_tokens)
             logger.debug("[Memory] _extract_summary_and_triples() LLM response: {}", response[:200])
 
             # 解析响应

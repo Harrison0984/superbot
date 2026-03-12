@@ -140,6 +140,31 @@ class Config(BaseModel):
     动作-元数据提取的示例
     """
 
+    # ==================== 摘要+三元组提取配置 ====================
+
+    summary_triples_prompt: str = '''<|im_start|>system
+Output ONLY summary and triples, no thinking.
+Format:
+摘要：<summary>
+三元组：[{{"s":"subject","r":"relation","o":"object"}}]
+<|im_end|>
+<|im_start|>user
+1. 压缩成简短摘要，不超过200字
+2. 提取三元组：{text}
+<|im_end|>
+<|im_start|>assistant
+摘要：'''
+    """
+    摘要+三元组提取的提示词模板
+
+    占位符:
+    - {text}: 待提取的文本
+    """
+    summary_triples_max_tokens: int = 512
+    """
+    摘要+三元组提取的最大 token 数
+    """
+
 
 # 全局默认配置
 config = Config()
