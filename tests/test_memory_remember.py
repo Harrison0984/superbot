@@ -97,13 +97,48 @@ class MockLLMProvider:
         return "测试回复"
 
 
-def test_remember_2(memory_system):
-    """测试 remember_2 方法"""
+def test_remember_2(memory_system, interactive: bool = False):
+    """测试 remember_2 方法
+
+    参数:
+        memory_system: MemorySystem 实例
+        interactive: 是否启用交互模式
+    """
     print("=" * 60)
     print("测试 remember_2")
     print("=" * 60)
 
     ms = memory_system
+
+    if interactive:
+        # 交互模式
+        print("\n--- 交互模式 (输入 q 退出) ---")
+        while True:
+            try:
+                text = input("\n请输入 raw_text: ").strip()
+                if not text:
+                    continue
+                if text.lower() in ['q', 'quit', 'exit', '退出']:
+                    print("退出交互模式")
+                    break
+
+                result = ms.remember_2(text)
+                print(f"摘要: {result}")
+
+                # 显示统计
+                conn = ms.relation_store._get_conn()
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM action_objects")
+                count = cursor.fetchone()[0]
+                print(f"当前 action_objects 数量: {count}")
+                conn.close()
+
+            except KeyboardInterrupt:
+                print("\n退出交互模式")
+                break
+            except Exception as e:
+                print(f"错误: {e}")
+        return ms
 
     # 测试用例
     test_texts = [
@@ -141,6 +176,8 @@ def test_remember_2(memory_system):
     print("\n--- user_actions 集合 ---")
     count = ms.vector_store.count(collection="user_actions")
     print(f"向量数量: {count}")
+
+    return ms
 
 
 def test_recall_2(memory_system: MemorySystem):
@@ -180,20 +217,46 @@ def cleanup():
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Memory System 测试")
+    parser.add_argument("--interactive", "-i", action="store_true", help="启用交互模式")
+    parser.add_argument("--cleanup", "-c", action="store_true", help="清理测试数据后退出")
+    args = parser.parse_args()
+
+    if args.cleanup:
+        cleanup()
+        return
+
     print("Memory System 测试")
     print("=" * 60)
 
     # 清理旧数据
     cleanup()
 
-    # 测试 remember_2
-    ms = test_remember_2()
+    # 初始化 MemorySystem
+    config = Config()
+    config.chroma_persist_dir = "./data/test_chroma"
+    config.sqlite_path = "./data/test_memory.db"
+    ms = MemorySystem(config=config, data_dir="./data/test")
 
-    # 测试 recall_2
-    test_recall_2(ms)
+    # 设置 embedding provider
+    from superbot.agent.memory_providers import SuperbotEmbeddingAdapter
+    embedding = SuperbotEmbeddingAdapter(
+        model_path="/Users/heyunpeng/workstation/src/nomic-embed-text-v1.5",
+        trust_remote_code=True
+    )
+    ms.set_embedding(embedding)
+    ms._llm = MockLLMProvider()
 
-    # 测试 query_summary 集合
-    test_query_summary_collection(ms)
+    if args.interactive:
+        # 交互模式 - 测试 remember_2
+        test_remember_2(ms, interactive=True)
+    else:
+        # 测试 remember_2
+        test_remember_2(ms)
+
+        # 测试 recall_2
+        test_recall_2(ms)
 
     print("\n" + "=" * 60)
     print("测试完成")
