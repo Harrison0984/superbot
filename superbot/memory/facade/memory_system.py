@@ -1,6 +1,8 @@
 """Memory System Facade - Unified Entry"""
 import os
 import sys
+import re
+import json
 import threading
 import uuid
 from typing import Dict, Any, Optional, List
@@ -127,19 +129,18 @@ class MemorySystem:
 
     # ==================== 核心接口 ====================
 
-    def remember(self, raw_text: str, analyze: bool = True) -> bool:
+    def remember(self, raw_text: str) -> bool:
         """
         添加记忆
 
         参数:
             raw_text: 原始文本
-            analyze: 是否进行分析（提取三元组）。False 时只存储向量，不调用 LLM
 
         返回:
             是否成功处理
         """
         with self._lock:
-            logger.debug("[Memory] remember() called with text: {}, analyze: {}", raw_text[:100], analyze)
+            logger.debug("[Memory] remember() called with text: {}", raw_text[:100])
 
             # 1. 物理过滤
             if not self.entropy_gatekeeper.should_accept(raw_text):
@@ -157,24 +158,10 @@ class MemorySystem:
                 logger.debug("[Memory] remember() rejected by semantic cache (duplicate): {}", raw_text[:100])
                 return False
 
-            # 4. 根据 analyze 参数决定处理方式
-            if analyze:
-                # 完整流程：加入缓冲区并处理（调用 LLM）
-                self.process_buffer.push(raw_text, vector)
-                logger.debug("[Memory] remember() pushed to process_buffer, size: {}", len(self.process_buffer.buffer))
-                self._process_buffer()
-            else:
-                # 快速路径：直接存储向量，不调用 LLM
-                import uuid
-                vector_id = str(uuid.uuid4())
-                metadata = {"tag": "raw", "source": "memory"}
-                self.vector_store.add(
-                    ids=[vector_id],
-                    vectors=[vector.tolist()],
-                    documents=[raw_text],
-                    metadatas=[metadata]
-                )
-                logger.debug("[Memory] remember() stored to vector_store directly (no LLM)")
+            # 4. 加入缓冲区并处理（调用 LLM 提取三元组）
+            self.process_buffer.push(raw_text, vector)
+            logger.debug("[Memory] remember() pushed to process_buffer, size: {}", len(self.process_buffer.buffer))
+            self._process_buffer()
 
             # 5. 更新历史和话题
             self.history.append(raw_text)
@@ -182,6 +169,164 @@ class MemorySystem:
 
             logger.debug("[Memory] remember() success, history length: {}", len(self.history))
             return True
+
+    def remember_2(self, raw_text: str, similarity_threshold: float = 0.97) -> dict:
+        """
+        添加记忆 v2 - 仅提取摘要和三元组（去重后返回）
+
+        参数:
+            raw_text: 原始文本
+            similarity_threshold: 相似度阈值，默认 0.97
+
+        返回:
+            摘要字符串
+        """
+        # 1. 记录 raw_logs
+        raw_log_id = self.relation_store.add_raw_log(
+            content=raw_text,
+            source=None,
+            incremental_density=None
+        )
+
+        # 2. 调用 LLM 同时提取摘要和三元组
+        llm = self._get_llm()
+        if llm is None:
+            logger.warning("[Memory] remember_2() no LLM provider")
+            return raw_text
+
+        # 使用优化后的 prompt 同时提取摘要和三元组
+        summary, triples = self._extract_summary_and_triples(raw_text, llm)
+
+        # 3. 对每个三元组进行去重
+        if self._embedding and triples:
+            embedding = self._embedding
+            action_ids = []
+
+            for triple in triples:
+                # 构建 subject+relation 文本
+                subject = triple.get("s", "") or triple.get("subject", "")
+                relation = triple.get("r", "") or triple.get("relation", "")
+                obj = triple.get("o", "") or triple.get("object", "")
+                action_text = f"{subject} {relation}"
+
+                if not action_text.strip():
+                    action_ids.append(None)
+                    continue
+
+                # 向量化
+                action_vector = embedding.encode(action_text).tolist()
+
+                # 查询 user_actions 集合
+                results = self.vector_store.search(
+                    query_vector=action_vector,
+                    n=1,
+                    collection="user_actions"
+                )
+
+                # 检查相似度
+                existing_id = None
+                if results and results[0].get("similarity", 0) >= similarity_threshold:
+                    existing_id = results[0]["id"]
+                    logger.debug("[Memory] remember_2() found existing action: {} (similarity: {:.4f})",
+                               existing_id, results[0]["similarity"])
+                else:
+                    # 写入新记录
+                    new_id = str(uuid.uuid4())
+                    self.vector_store.add(
+                        ids=[new_id],
+                        vectors=[action_vector],
+                        documents=[action_text],
+                        collection="user_actions"
+                    )
+                    existing_id = new_id
+                    logger.debug("[Memory] remember_2() added new action: {}", new_id)
+
+                # 写入 sqlite 表 action_objects
+                if existing_id:
+                    self.relation_store.add_action_object(
+                        raw_log_id=raw_log_id,
+                        vector_id=existing_id,
+                        subject=subject,
+                        relation=relation,
+                        object_=obj
+                    )
+
+                action_ids.append(existing_id)
+
+            logger.debug("[Memory] remember_2() success, extracted {} triples, {} new actions",
+                        len(triples), sum(1 for aid in action_ids if aid))
+            return summary
+
+        logger.debug("[Memory] remember_2() success, extracted {} triples", len(triples))
+        return summary
+
+    def _extract_summary_and_triples(self, text: str, llm) -> tuple:
+        """同时提取摘要和三元组
+
+        使用优化后的 prompt，一次 LLM 调用同时产出摘要和三元组
+
+        返回:
+            (summary, triples) 元组
+        """
+        # 优化后的 prompt（跳过思考过程）
+        prompt = f'''<|im_start|>system
+Output ONLY summary and triples, no thinking.
+Format:
+摘要：<summary>
+三元组：[{{"s":"subject","r":"relation","o":"object"}}]
+<|im_end|>
+<|im_start|>user
+1. 压缩成简短摘要，不超过200字
+2. 提取三元组：{text}
+<|im_end|>
+<|im_start|>assistant
+摘要：'''
+
+        try:
+            # 调用 LLM generate 方法
+            # SuperbotLLMAdapter 有 generate 方法
+            response = llm.generate(prompt, max_tokens=512, temperature=0.3)
+            logger.debug("[Memory] _extract_summary_and_triples() LLM response: {}", response[:200])
+
+            # 解析响应
+            summary = ""
+            triples = []
+
+            # 提取摘要
+            summary_match = re.search(r'摘要[：:]\s*(.+?)(?=三元组|$)', response, re.DOTALL)
+            if summary_match:
+                summary = summary_match.group(1).strip()
+                # 清理摘要中的思考过程残留
+                if '<think>' in summary:
+                    summary = summary.split('</think>')[-1].strip()
+
+            # 提取三元组
+            triple_match = re.search(r'三元组[：:]?\s*(\[.+?\])', response, re.DOTALL)
+            if triple_match:
+                try:
+                    triples = json.loads(triple_match.group(1))
+                except:
+                    # 备用解析
+                    try:
+                        objs = re.findall(r'\{[^{}]*\}', triple_match.group(1))
+                        for o in objs:
+                            try:
+                                t = json.loads(o)
+                                if 's' in t or 'subject' in t:
+                                    triples.append(t)
+                            except:
+                                pass
+                    except:
+                        pass
+
+            logger.debug("[Memory] _extract_summary_and_triples() extracted: {} triples, summary: {}",
+                        len(triples), summary[:50] if summary else "")
+
+            return summary, triples
+
+        except Exception as e:
+            logger.error("[Memory] _extract_summary_and_triples() error: {}", e)
+            return "", []
 
     def _split_long_text(self, text: str) -> list[str]:
         """Split text into multiple parts if it contains multiple intents.

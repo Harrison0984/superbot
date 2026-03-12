@@ -18,34 +18,64 @@ class VectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"}
         )
+        # 缓存其他集合
+        self._collections: Dict[str, chromadb.Collection] = {}
+
+    def get_collection(self, name: str) -> chromadb.Collection:
+        """获取指定名称的集合"""
+        if name not in self._collections:
+            self._collections[name] = self.client.get_or_create_collection(
+                name=name,
+                metadata={"hnsw:space": "cosine"}
+            )
+        return self._collections[name]
 
     def add(
         self,
         ids: List[str],
         vectors: List[List[float]],
         documents: Optional[List[str]] = None,
-        metadatas: Optional[List[Dict[str, Any]]] = None
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        collection: Optional[str] = None
     ):
         """添加向量"""
-        self.collection.add(
-            ids=ids,
-            embeddings=vectors,
-            documents=documents,
-            metadatas=metadatas
-        )
+        if collection:
+            coll = self.get_collection(collection)
+            coll.add(
+                ids=ids,
+                embeddings=vectors,
+                documents=documents,
+                metadatas=metadatas
+            )
+        else:
+            self.collection.add(
+                ids=ids,
+                embeddings=vectors,
+                documents=documents,
+                metadatas=metadatas
+            )
 
     def search(
         self,
         query_vector: List[float],
         n: int = 5,
-        filter_: Optional[Dict[str, Any]] = None
+        filter_: Optional[Dict[str, Any]] = None,
+        collection: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """搜索相似向量"""
-        results = self.collection.query(
-            query_embeddings=[query_vector],
-            n_results=n,
-            where=filter_
-        )
+        if collection:
+            coll = self.get_collection(collection)
+            results = coll.query(
+                query_embeddings=[query_vector],
+                n_results=n,
+                where=filter_
+            )
+        else:
+            results = self.collection.query(
+                query_embeddings=[query_vector],
+                n_results=n,
+                where=filter_
+            )
 
         # 格式化返回结果
         formatted = []
@@ -55,15 +85,22 @@ class VectorStore:
                     "id": doc_id,
                     "document": results["documents"][0][i] if results["documents"] else None,
                     "metadata": results["metadatas"][0][i] if results["metadatas"] else None,
-                    "distance": results["distances"][0][i] if results["distances"] else None
+                    "distance": results["distances"][0][i] if results["distances"] else None,
+                    "similarity": 1 - results["distances"][0][i] if results["distances"] else None
                 })
 
         return formatted
 
-    def delete(self, ids: List[str]):
+    def delete(self, ids: List[str], collection: Optional[str] = None):
         """删除向量"""
-        self.collection.delete(ids=ids)
+        if collection:
+            coll = self.get_collection(collection)
+            coll.delete(ids=ids)
+        else:
+            self.collection.delete(ids=ids)
 
-    def count(self) -> int:
+    def count(self, collection: Optional[str] = None) -> int:
         """返回向量数量"""
+        if collection:
+            return self.get_collection(collection).count()
         return self.collection.count()

@@ -72,6 +72,23 @@ class RelationStore:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_mem_nodes_vector ON memory_nodes(vector_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rel_head_tail ON relationships(head, tail)")
 
+        # action_objects 表 - 存储三元组的向量 id 和 object
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS action_objects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                raw_log_id INTEGER,
+                vector_id TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                object TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(vector_id, object)
+            )
+        """)
+
+        # 索引
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_action_objects_vector_id ON action_objects(vector_id)")
+
         conn.commit()
         conn.close()
 
@@ -372,5 +389,45 @@ class EnhancedRelationStore(RelationStore):
             """, params)
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def add_action_object(
+        self,
+        raw_log_id: int,
+        vector_id: str,
+        subject: str,
+        relation: str,
+        object_: str
+    ) -> None:
+        """Add action object - stores vector_id and object for each triple"""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO action_objects (raw_log_id, vector_id, subject, relation, object)
+                VALUES (?, ?, ?, ?, ?)
+            """, (raw_log_id, vector_id, subject, relation, object_))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_action_object(self, vector_id: str) -> Optional[Dict[str, Any]]:
+        """Get action object by vector_id"""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM action_objects WHERE vector_id = ?", (vector_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "vector_id": row[1],
+                "subject": row[2],
+                "relation": row[3],
+                "object": row[4],
+                "created_at": row[5]
+            }
         finally:
             conn.close()

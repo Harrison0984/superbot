@@ -214,7 +214,8 @@ class EmbeddingConfig(Base):
     """Embedding model configuration for vector-based memory."""
 
     enabled: bool = False
-    model_path: str = "/Users/heyunpeng/workstation/src/MiniLM-L6-v2"  # Local sentence-transformers model
+    model_path: str = "/Users/heyunpeng/workstation/src/nomic-embed-text-v1.5"  # Local sentence-transformers model
+    trust_remote_code: bool = True  # Required for nomic-embed-text-v1.5
 
     # Session cleanup threshold - when to clean old messages from session
     # (vector memory handles all storage, this is just for memory management)

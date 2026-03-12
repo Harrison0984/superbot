@@ -102,21 +102,23 @@ class SuperbotEmbeddingAdapter:
     the encode methods required by the MemorySystem.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, trust_remote_code: bool = False):
         """Initialize the embedding adapter.
 
         Args:
             model_path: Path to the sentence-transformers model directory.
+            trust_remote_code: Whether to trust remote code (required for some models like nomic-embed-text-v1.5).
         """
         self._model = None
         self._model_path = model_path
+        self._trust_remote_code = trust_remote_code
         self._dimension: int | None = None
 
     def _load_model(self):
         """Lazy load the sentence-transformers model."""
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_path)
+            self._model = SentenceTransformer(self._model_path, trust_remote_code=self._trust_remote_code)
             self._dimension = self._model.get_sentence_embedding_dimension()
 
     def encode(self, text: str) -> np.ndarray:
@@ -541,7 +543,10 @@ def create_embedding_provider(config) -> EmbeddingProvider | None:
     if not config.enabled:
         return None
 
-    return SuperbotEmbeddingAdapter(model_path=config.model_path)
+    return SuperbotEmbeddingAdapter(
+        model_path=config.model_path,
+        trust_remote_code=getattr(config, 'trust_remote_code', False)
+    )
 
 
 def create_llm_adapter(provider, default_model: str, config=None, memory_config=None) -> LLMProvider:
