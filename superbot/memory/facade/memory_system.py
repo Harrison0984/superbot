@@ -36,7 +36,9 @@ class MemorySystem:
     def __init__(
         self,
         data_dir: str = "./data",
-        config: Optional[Config] = None
+        config: Optional[Config] = None,
+        embedding_provider: Optional[EmbeddingProvider] = None,
+        llm_provider: Optional[LLMProvider] = None
     ):
         self.config = config if config is not None else Config()
         # Convert to absolute path to avoid issues with relative paths
@@ -67,12 +69,12 @@ class MemorySystem:
             buffer_size=self.config.history_buffer_size
         )
 
-        # 初始化检索器 (embedding_provider 由外部注入)
+        # 初始化检索器
         self.retriever = EnhancedRetriever(
             self.vector_store,
             self.relation_store,
             embedding_provider=None,
-            llm_provider=None  # 由外部通过 set_embedding 设置
+            llm_provider=None
         )
 
         # remember 生成的最新摘要
@@ -80,6 +82,12 @@ class MemorySystem:
 
         # 线程锁
         self._lock = threading.Lock()
+
+        # 在初始化时加载 embedding 和 llm
+        if embedding_provider:
+            self.set_embedding(embedding_provider)
+        if llm_provider:
+            self.set_llm(llm_provider)
 
     # ==================== 模型注入 ====================
 
@@ -119,11 +127,11 @@ class MemorySystem:
             # 1. raw_text 缓存到 process_buffer（来源固定为 ASSISTANT）
             self.history.push(raw_text, source="ASSISTANT")
             self.process_buffer.push(raw_text, source="ASSISTANT")
-            logger.debug("[Memory] remember() pushed to process_buffer, size: {}", self.process_buffer.size())
+            logger.info("[Memory] remember() pushed to process_buffer, size: {}", self.process_buffer.size())
 
             # 2. 检查是否需要处理
             if not self.process_buffer.should_process():
-                logger.debug("[Memory] remember() buffer not ready, waiting for more items")
+                logger.info("[Memory] remember() buffer not ready, waiting for more items")
                 self._latest_summary = None
                 return
 
@@ -139,10 +147,9 @@ class MemorySystem:
         """
         batch_items = self.process_buffer.get_batch()
         if not batch_items:
-            logger.debug("[Memory] _process_buffer() skipped, no batch items")
             return
 
-        logger.debug("[Memory] _process_buffer() processing {} items", len(batch_items))
+        logger.info("[Memory] _process_buffer() processing {} items", len(batch_items))
 
         # 获取 LLM
         llm = self._get_llm()
@@ -151,33 +158,20 @@ class MemorySystem:
             self._latest_summary = None
             return
 
-        # 整合所有文本为对话格式（摘要放在前面）
         combined_text = ""
-        if self._latest_summary:
-            combined_text += f"[SUMMARY]:{self._latest_summary}\n"
-
         for item in batch_items:
             source = item.get("source", "USER")
             combined_text += f"[{source}]:{item['text']}\n"
 
-        logger.debug("[Memory] _process_buffer() combined_text: {}", combined_text[:200])
-
-        # 记录 raw_logs（每个 item 都要记录）
-        raw_log_ids = []
-        for item in batch_items:
-            raw_log_id = self.relation_store.add_raw_log(
-                content=item["text"],
-                source=item.get("source", "USER"),
-                incremental_density=None
-            )
-            raw_log_ids.append(raw_log_id)
-
         # 一次性提交给 LLM 提取摘要和三元组
         summary, triples = self._extract_summary_and_triples(combined_text, llm)
 
+        # 生成 summary_id 用于追溯
+        summary_id = str(uuid.uuid4())
+
         # 保存最新的摘要到 self
         self._latest_summary = summary
-        logger.debug("[Memory] _process_buffer() summary: {}", summary[:100] if summary else None)
+        logger.info("[Memory] _process_buffer() summary: {}", summary[:100] if summary else None)
 
         # 对每个三元组进行去重
         if self._embedding and triples:
@@ -188,7 +182,13 @@ class MemorySystem:
                 subject = triple.get("s", "") or triple.get("subject", "")
                 relation = triple.get("r", "") or triple.get("relation", "")
                 obj = triple.get("o", "") or triple.get("object", "")
-                action_text = f"{subject} {relation}"
+                # 构建完整的三元组文本（包含 object）
+                # 用 JSON 格式存储三元组，避免字符串解析歧义
+                action_text = json.dumps({
+                    "s": subject,
+                    "r": relation,
+                    "o": obj
+                })
 
                 if not action_text.strip():
                     continue
@@ -207,7 +207,7 @@ class MemorySystem:
                 existing_id = None
                 if results and results[0].get("similarity", 0) >= similarity_threshold:
                     existing_id = results[0]["id"]
-                    logger.debug("[Memory] _process_buffer() found existing action: {} (similarity: {:.4f})",
+                    logger.info("[Memory] _process_buffer() found existing action: {} (similarity: {:.4f})",
                                existing_id, results[0]["similarity"])
                 else:
                     # 写入新记录
@@ -219,21 +219,17 @@ class MemorySystem:
                         collection="user_actions"
                     )
                     existing_id = new_id
-                    logger.debug("[Memory] _process_buffer() added new action: {}", new_id)
+                    logger.info("[Memory] _process_buffer() added new action: {}", new_id[:8])
 
-                # 写入 sqlite 表 action_objects（关联到所有 raw_log_id）
+                # 写入 sqlite 表 action_objects（关联 vector_id 和 summary_id）
                 if existing_id:
-                    for raw_log_id in raw_log_ids:
-                        self.relation_store.add_action_object(
-                            raw_log_id=raw_log_id,
-                            vector_id=existing_id,
-                            subject=subject,
-                            relation=relation,
-                            object_=obj
-                        )
+                    self.relation_store.add_action_object(
+                        summary_id=summary_id,
+                        vector_id=existing_id
+                    )
 
         self.process_buffer.clear()
-        logger.debug("[Memory] _process_buffer() completed, latest_summary: {}",
+        logger.info("[Memory] _process_buffer() completed, latest_summary: {}",
                     self._latest_summary[:100] if self._latest_summary else None)
 
     def _extract_summary_and_triples(self, text: str, llm) -> tuple:
@@ -250,11 +246,21 @@ class MemorySystem:
         max_tokens = self.config.summary_triples_max_tokens
 
         try:
-            # 调用 LLM generate 方法
-            # mlx_lm.generate 不支持 temperature 参数
-            response = llm.generate(prompt, max_tokens=max_tokens)
-            logger.debug("[Memory] _extract_summary_and_triples() LLM response: {}", response[:200])
+            # 调用 LLM 方法（兼容不同 provider）
+            if hasattr(llm, 'generate'):
+                response = llm.generate(prompt, max_tokens=max_tokens)
+            elif hasattr(llm, 'chat'):
+                # MiniMaxProvider 等使用 async chat 方法
+                import asyncio
+                response = asyncio.run(llm.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens
+                ))
+                response = response.content
+            else:
+                raise AttributeError(f"LLM provider {type(llm)} has no generate or chat method")
 
+    
             # 解析响应
             summary = ""
             triples = []
@@ -289,8 +295,9 @@ class MemorySystem:
                     except:
                         pass
 
-            logger.debug("[Memory] _extract_summary_and_triples() extracted: {} triples, summary: {}",
-                        len(triples), summary[:50] if summary else "")
+            logger.info("[Memory] _extract_summary_and_triples() summary: {}", summary[:100] if summary else "N/A")
+            logger.info("[Memory] _extract_summary_and_triples() triples: {}",
+                        [{"s": t.get("s", ""), "r": t.get("r", ""), "o": t.get("o", "")} for t in triples])
 
             return summary, triples
 
@@ -298,7 +305,7 @@ class MemorySystem:
             logger.error("[Memory] _extract_summary_and_triples() error: {}", e)
             return "", []
 
-    def recall(self, query_text: str, similarity_threshold: float = 0.9) -> Dict[str, Any]:
+    def recall(self, query_text: str, similarity_threshold: float = 0.7) -> Dict[str, Any]:
         """
         检索记忆 v2 - 基于摘要检索
 
@@ -312,13 +319,12 @@ class MemorySystem:
         with self._lock:
             # 使用 self 中的摘要
             summary = self._latest_summary or ""
-            logger.debug("[Memory] recall() called with query: {}, summary: {}", query_text[:100], summary[:100])
+            logger.info("[Memory] recall() called with query: {}", query_text[:50])
 
             # 0. 将 query_text 保存到 process_buffer（来源固定为 USER）
             self.history.push(query_text, source="USER")
             self.process_buffer.push(query_text, source="USER")
-            logger.debug("[Memory] recall() pushed query to process_buffer, size: {}", self.process_buffer.size())
-
+    
             if not self._embedding:
                 logger.warning("[Memory] recall() no embedding provider")
                 return {"triples": [], "query": query_text}
@@ -332,8 +338,7 @@ class MemorySystem:
             import numpy as np
 
             similarity = np.dot(summary_vector, query_vector) / (np.linalg.norm(summary_vector) * np.linalg.norm(query_vector) + 1e-8)
-            logger.debug("[Memory] recall() summary vs query_text similarity: {:.4f}", similarity)
-
+    
             # 3. 如果相似度 < 0.8，从 query_summary 集合查询最接近的 summary
             used_summary = summary
             if similarity < 0.8:
@@ -345,7 +350,7 @@ class MemorySystem:
 
                 if query_summary_results and query_summary_results[0].get("similarity", 0) > similarity:
                     used_summary = query_summary_results[0].get("document", "")
-                    logger.debug("[Memory] recall() found better summary: {}", used_summary[:50])
+                    logger.info("[Memory] recall() found better summary: {}", used_summary[:50])
                     # 使用找到的 summary 向量
                     summary_vector = self._embedding.encode(used_summary).tolist()
 
@@ -358,41 +363,56 @@ class MemorySystem:
                 metadatas=[{"timestamp": datetime.now().isoformat()}],
                 collection="query_summary"
             )
-            logger.debug("[Memory] recall() saved summary to query_summary: {}", save_id)
+            logger.info("[Memory] recall() saved summary to query_summary: {}", save_id[:8])
 
-            # 5. 查询 user_actions 集合
+            # 5. 查询 user_actions 集合（使用 query_vector 检索，而非 summary_vector）
             vector_results = self.vector_store.search(
-                query_vector=summary_vector,
+                query_vector=query_vector,
                 n=10,
                 collection="user_actions"
             )
 
-            logger.debug("[Memory] recall() vector results: {}", len(vector_results))
-
+    
             # 6. 过滤匹配度 > threshold 的结果，并查询 action_objects 组合成完整三元组
             triples = []
+
+            # 打印检索到的结果相似度
+            logger.info("[Memory] recall() retrieved {} results, threshold: {}", len(vector_results), similarity_threshold)
+            for r in vector_results:
+                logger.info("[Memory] recall() result: id={}, similarity={}", r.get("id", "")[:20], r.get("similarity", 0))
 
             for result in vector_results:
                 if result.get("similarity", 0) <= similarity_threshold:
                     continue
 
+                # 直接从 ChromaDB document 字段获取三元组文本
                 vector_id = result.get("id")
-                action_obj = self.relation_store.get_action_object(vector_id)
-                if action_obj:
-                    subject = action_obj.get("subject", "")
-                    relation = action_obj.get("relation", "")
-                    obj = action_obj.get("object", "")
+                triple_text = result.get("document", "")
+
+                if triple_text:
+                    # 解析 JSON 格式的三元组 {"s": subject, "r": relation, "o": object}
+                    try:
+                        triple_data = json.loads(triple_text)
+                        subject = triple_data.get("s", "") or triple_data.get("subject", "")
+                        relation = triple_data.get("r", "") or triple_data.get("relation", "")
+                        obj = triple_data.get("o", "") or triple_data.get("object", "")
+                    except json.JSONDecodeError:
+                        # 兼容旧格式的字符串解析
+                        parts = triple_text.split(" ", 2)
+                        subject = parts[0] if len(parts) > 0 else ""
+                        relation = parts[1] if len(parts) > 1 else ""
+                        obj = parts[2] if len(parts) > 2 else ""
 
                     triples.append({
                         "subject": subject,
                         "relation": relation,
                         "object": obj,
-                        "triple_text": f"{subject} {relation} {obj}" if obj else f"{subject} {relation}",
+                        "triple_text": triple_text,
                         "similarity": result.get("similarity", 0),
                         "vector_id": vector_id
                     })
 
-            logger.debug("[Memory] recall() returning {} triples", len(triples))
+            logger.info("[Memory] recall() returning {} triples", len(triples))
 
             # 获取 history 中的数据
             batch_items = self.history.get_batch()
@@ -413,7 +433,7 @@ class MemorySystem:
         Returns:
             格式化的记忆上下文字符串，如果无结果则返回空字符串
         """
-        logger.debug("[Memory] get_memory_context() called with query: {}", query[:100])
+        logger.info("[Memory] get_memory_context() called")
         results = self.recall(query)
         lines = []
 
@@ -453,8 +473,12 @@ class MemorySystem:
                     lines.append(f"- [{role}]: {text[:100]}")
             lines.append("")
 
+        # 打印重要的记忆内容
+        logger.info("[Memory] get_memory_context() summary: {}", summary[:100] if summary else "N/A")
+        logger.info("[Memory] get_memory_context() triples: {}", [t.get("triple_text", "") for t in triples[:3]] if triples else "N/A")
+        logger.info("[Memory] get_memory_context() history items: {}", history)
+
         result = "\n".join(lines) if lines else ""
-        logger.debug("[Memory] get_memory_context() returning {} chars", len(result))
         return result
 
 

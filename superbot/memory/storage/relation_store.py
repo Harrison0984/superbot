@@ -72,17 +72,14 @@ class RelationStore:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_mem_nodes_vector ON memory_nodes(vector_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rel_head_tail ON relationships(head, tail)")
 
-        # action_objects 表 - 存储三元组的向量 id 和 object
+        # action_objects 表 - 存储向量 id 与摘要 id 的关联（只做追溯，不存具体三元组）
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS action_objects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                raw_log_id INTEGER,
+                summary_id TEXT NOT NULL,
                 vector_id TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                relation TEXT NOT NULL,
-                object TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(vector_id, object)
+                UNIQUE(vector_id)
             )
         """)
 
@@ -394,26 +391,23 @@ class EnhancedRelationStore(RelationStore):
 
     def add_action_object(
         self,
-        raw_log_id: int,
-        vector_id: str,
-        subject: str,
-        relation: str,
-        object_: str
+        summary_id: str,
+        vector_id: str
     ) -> None:
-        """Add action object - stores vector_id and object for each triple"""
+        """Add action object - stores vector_id and summary_id for tracing"""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT OR IGNORE INTO action_objects (raw_log_id, vector_id, subject, relation, object)
-                VALUES (?, ?, ?, ?, ?)
-            """, (raw_log_id, vector_id, subject, relation, object_))
+                INSERT OR REPLACE INTO action_objects (summary_id, vector_id)
+                VALUES (?, ?)
+            """, (summary_id, vector_id))
             conn.commit()
         finally:
             conn.close()
 
     def get_action_object(self, vector_id: str) -> Optional[Dict[str, Any]]:
-        """Get action object by vector_id"""
+        """Get action object by vector_id - returns summary_id for tracing"""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
@@ -423,11 +417,9 @@ class EnhancedRelationStore(RelationStore):
                 return None
             return {
                 "id": row[0],
-                "vector_id": row[1],
-                "subject": row[2],
-                "relation": row[3],
-                "object": row[4],
-                "created_at": row[5]
+                "summary_id": row[1],
+                "vector_id": row[2],
+                "created_at": row[3]
             }
         finally:
             conn.close()
