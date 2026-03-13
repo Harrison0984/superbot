@@ -42,7 +42,8 @@ Information about the user to help personalize interactions.
 
 ## Special Instructions
 
-(Any specific instructions for how the assistant should behave)
+- Please try to reply in Chinese as much as possible (尽量使用中文回复)
+- (Any specific instructions for how the assistant should behave)
 
 ---
 

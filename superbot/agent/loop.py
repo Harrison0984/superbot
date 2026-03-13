@@ -81,9 +81,11 @@ class AgentLoop:
         self.provider = provider
 
         # Initialize experience store for tool execution history
+        self.workspace = workspace
+
+        # Initialize experience store for tool execution history
         self._experience_store = None
         self._init_experience_store()
-        self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
         self.temperature = temperature
@@ -147,10 +149,7 @@ class AgentLoop:
     def _register_default_idle_tasks(self) -> None:
         """Register default idle tasks."""
         # Import here to avoid circular imports
-        from superbot.agent.idle_tasks import CleanupIdleTask, EntityNormalizationIdleTask
-
-        # Register entity normalization (1 hour threshold)
-        self.register_idle_task(EntityNormalizationIdleTask(idle_threshold_seconds=3600))
+        from superbot.agent.idle_tasks import CleanupIdleTask
 
         # Register cleanup (default threshold)
         self.register_idle_task(CleanupIdleTask())
@@ -183,10 +182,11 @@ class AgentLoop:
         self.tools.register(FeishuDocTool(config=self.channels_config.feishu if self.channels_config else None))
 
         # Register Claude tool (invoked via @claude)
+        # Use direct subprocess implementation to avoid MCP asyncio issues
         claude_config = getattr(self.channels_config, 'claude', None) if self.channels_config else None
         if claude_config and claude_config.enabled:
-            from superbot.agent.tools.claude import ClaudeTool
-            self.tools.register(ClaudeTool(config=claude_config))
+            from superbot.agent.tools.claude_subprocess import ClaudeToolDirect
+            self.tools.register(ClaudeToolDirect(config=claude_config))
 
         self._email_tool: EmailTool | None = None
         if self.channels_config and hasattr(self.channels_config, 'email') and self.channels_config.email:
