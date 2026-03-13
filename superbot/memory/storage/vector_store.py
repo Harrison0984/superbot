@@ -3,23 +3,35 @@ from typing import List, Dict, Any, Optional
 import chromadb
 
 
+# 默认集合列表
+DEFAULT_COLLECTIONS = [
+    {"name": "query_summary", "dimension": 768},
+    {"name": "user_actions", "dimension": 768},
+]
+
+
 class VectorStore:
     """向量存储：使用 ChromaDB"""
 
     def __init__(
         self,
         persist_directory: str = "./data/chroma",
-        collection_name: str = "memmory"
+        collection_name: str = "user_actions"
     ):
         self.persist_directory = persist_directory
         self.collection_name = collection_name
         self.client = chromadb.PersistentClient(path=persist_directory)
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-        # 缓存其他集合
+
+        # 预创建所有默认集合
         self._collections: Dict[str, chromadb.Collection] = {}
+        for coll_config in DEFAULT_COLLECTIONS:
+            self._collections[coll_config["name"]] = self.client.get_or_create_collection(
+                name=coll_config["name"],
+                metadata={"hnsw:space": "cosine"}
+            )
+
+        # 主集合引用
+        self.collection = self._collections[collection_name]
 
     def get_collection(self, name: str) -> chromadb.Collection:
         """获取指定名称的集合"""
