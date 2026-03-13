@@ -851,9 +851,8 @@ class AgentLoop:
         # 只有来自 channel 或 CLI 的消息才存储记忆
         if self.memory_system is not None and msg.channel in self._channels_with_memory:
             try:
-                # Store user and assistant messages (both with analysis)
-                self.memory_system.remember(f"[USER] {msg.content}")
-                self.memory_system.remember(f"[ASSISTANT] {final_content}")
+                # Store assistant messages
+                await self.memory_system.remember(final_content)
             except Exception as e:
                 logger.error("Error storing to real-time memory: {}", e)
 

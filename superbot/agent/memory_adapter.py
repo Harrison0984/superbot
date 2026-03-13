@@ -61,8 +61,8 @@ class MemoryAdapter:
             logger.error("Error getting memory context: {}", e)
             return ""
 
-    def remember(self, text: str) -> bool:
-        """Store new memory in real-time.
+    async def remember(self, text: str) -> bool:
+        """Store new memory in real-time (异步版本).
 
         Args:
             text: Text content to remember.
@@ -75,10 +75,8 @@ class MemoryAdapter:
             return False
 
         try:
-            result = self._memory_system.remember(text)
-            if not result:
-                logger.debug("Memory filtered by entropy gatekeeper: {}", text[:50])
-            return result
+            await self._memory_system.remember(text)
+            return True
         except Exception as e:
             logger.warning("Error storing memory: {}", e)
             return False

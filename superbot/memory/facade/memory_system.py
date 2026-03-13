@@ -112,9 +112,9 @@ class MemorySystem:
 
     # ==================== 核心接口 ====================
 
-    def remember(self, raw_text: str, similarity_threshold: float = 0.97) -> None:
+    async def remember(self, raw_text: str, similarity_threshold: float = 0.97) -> None:
         """
-        添加记忆 v2 - 仅提取摘要和三元组（去重后返回）
+        添加记忆 v2 - 异步版本
 
         参数:
             raw_text: 原始文本
@@ -136,11 +136,11 @@ class MemorySystem:
                 return
 
             # 3. 获取缓冲区内容并处理
-            self._process_buffer(similarity_threshold)
+            await self._process_buffer(similarity_threshold)
 
-    def _process_buffer(self, similarity_threshold: float) -> None:
+    async def _process_buffer(self, similarity_threshold: float) -> None:
         """
-        处理 process_buffer 中的内容，提取摘要和三元组
+        处理 process_buffer 中的内容，提取摘要和三元组（异步版本）
 
         参数:
             similarity_threshold: 相似度阈值
@@ -163,8 +163,8 @@ class MemorySystem:
             source = item.get("source", "USER")
             combined_text += f"[{source}]:{item['text']}\n"
 
-        # 一次性提交给 LLM 提取摘要和三元组
-        summary, triples = self._extract_summary_and_triples(combined_text, llm)
+        # 一次性提交给 LLM 提取摘要和三元组（异步调用）
+        summary, triples = await self._extract_summary_and_triples(combined_text, llm)
 
         # 生成 summary_id 用于追溯
         summary_id = str(uuid.uuid4())
@@ -232,8 +232,8 @@ class MemorySystem:
         logger.info("[Memory] _process_buffer() completed, latest_summary: {}",
                     self._latest_summary[:100] if self._latest_summary else None)
 
-    def _extract_summary_and_triples(self, text: str, llm) -> tuple:
-        """同时提取摘要和三元组
+    async def _extract_summary_and_triples(self, text: str, llm) -> tuple:
+        """同时提取摘要和三元组（异步版本）
 
         使用优化后的 prompt，一次 LLM 调用同时产出摘要和三元组
 
@@ -251,11 +251,10 @@ class MemorySystem:
                 response = llm.generate(prompt, max_tokens=max_tokens)
             elif hasattr(llm, 'chat'):
                 # MiniMaxProvider 等使用 async chat 方法
-                import asyncio
-                response = asyncio.run(llm.chat(
+                response = await llm.chat(
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=max_tokens
-                ))
+                )
                 response = response.content
             else:
                 raise AttributeError(f"LLM provider {type(llm)} has no generate or chat method")

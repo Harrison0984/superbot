@@ -25,7 +25,7 @@ User Message (Telegram/WhatsApp/Feishu/Email/QQ)
            │
            ▼
     ┌──────────────┐
-    │ LLM Provider │  ────  OpenAI / Anthropic / MiniMax / MLX (local)
+    │ LLM Provider │  ────  External provider (OpenAI / Anthropic / MiniMax / MLX...)
     └──────────────┘
 ```
 
@@ -36,7 +36,7 @@ User Message (Telegram/WhatsApp/Feishu/Email/QQ)
 | **Chat Bridges** | Adapters for Telegram, WhatsApp, Feishu, Email, QQ |
 | **Message Bus** | Async queue for inbound/outbound messages |
 | **Agent** | Core reasoning loop with context, memory, and tool execution |
-| **LLM Providers** | OpenAI, Anthropic, MiniMax, MLX (Apple Silicon local), etc. |
+| **LLM Providers** | External injection (OpenAI, Anthropic, MiniMax, MLX, etc.) |
 | **Tools** | Shell, filesystem, web search, MCP servers |
 | **Scheduled Tasks** | Cron-based job scheduling |
 
@@ -65,8 +65,7 @@ pip install superbot-ai
 ## 🚀 Quick Start
 
 > [!TIP]
-> Default provider is **MiniMax**. Set your API key in `~/.superbot/config.json`.
-> Get API keys: [MiniMax](https://platform.minimaxi.com) (China)
+> LLM provider is **externally injected**. Configure your API key in `~/.superbot/config.json`.
 
 **1. Initialize**
 
@@ -696,6 +695,84 @@ docker run -v ~/.superbot:/root/.superbot -p 18790:18790 superbot gateway
 docker run -v ~/.superbot:/root/.superbot --rm superbot agent -m "Hello!"
 docker run -v ~/.superbot:/root/.superbot --rm superbot status
 ```
+
+## 🧠 Memory System
+
+### 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     MemorySystem                            │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    │
+│  │   Buffers   │    │   Storage   │    │    LLM     │    │
+│  ├─────────────┤    ├─────────────┤    ├─────────────┤    │
+│  │ process_buf │    │  VectorStore│    │  (External) │    │
+│  │   (FIFO)   │───▶│  (ChromaDB) │◀───│  Provider  │    │
+│  ├─────────────┤    ├─────────────┤    └─────────────┘    │
+│  │   history   │    │RelationStore│                      │
+│  │   (Cache)   │───▶│   (SQLite)  │                      │
+│  └─────────────┘    └─────────────┘                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+> [!NOTE]
+> LLM Provider 通过外部注入，不限定具体实现。请参考上方的 LLM Provider 配置。
+
+### 核心概念
+
+| 组件 | 描述 |
+|------|------|
+| **process_buffer** | 批量处理缓存，达到阈值(count/size)后触发 LLM 提取 |
+| **history** | 对话历史 FIFO 缓存 |
+| **VectorStore** | ChromaDB 向量存储，存储三元组嵌入 |
+| **RelationStore** | SQLite 关系存储，追溯来源 |
+
+### 工作流程
+
+**1. Remember (记忆存储)**
+```
+用户/助手消息 → process_buffer → 达到阈值 → LLM提取(summary+triples) → ChromaDB存储
+```
+
+**2. Recall (记忆检索)**
+```
+用户查询 → 向量化查询 → ChromaDB检索 → 返回相关三元组
+```
+
+### 数据格式
+
+**三元组存储 (JSON 格式)**:
+```json
+{"s": "张三", "r": "喜欢", "o": "西瓜"}
+```
+
+### 配置
+
+```json
+{
+  "memory": {
+    "process_buffer_count": 30,
+    "process_buffer_size": 2048,
+    "history_buffer_count": 3,
+    "history_buffer_size": 2048
+  }
+}
+```
+
+### 支持的 LLM Provider
+
+LLM Provider 通过外部注入，不限定具体实现。内置支持的 Provider：
+
+| Provider | 描述 |
+|----------|------|
+| **OpenAI** | GPT 系列模型 |
+| **Anthropic** | Claude 系列模型 |
+| **MiniMax** | MiniMax 系列模型 |
+| **MLX** | Apple Silicon 本地模型 |
+| **DashScope** | 阿里云通义千问 |
+| **vLLM** | 自建 API 服务 |
+| **VolcEngine** | 火山引擎 |
 
 ## 📁 Project Structure
 

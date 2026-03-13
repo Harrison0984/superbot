@@ -68,7 +68,7 @@ def build_prompt(user_input: str, memory_context: str) -> str:
     return prompt
 
 
-def chat_loop():
+async def chat_loop():
     """交互式聊天循环"""
     print("=" * 50)
     print("Memory System 交互式测试")
@@ -192,9 +192,9 @@ def chat_loop():
 
             print(f"\n[Assistant]: {response}")
 
-            # 4. 调用 remember 记住助手回复
+            # 4. 调用 remember 记住助手回复（异步调用）
             print(f"[System]: Remembering assistant response...")
-            memory.remember(response)
+            await memory.remember(response)
 
         except KeyboardInterrupt:
             print("\n\n再见!")
@@ -206,4 +206,5 @@ def chat_loop():
 
 
 if __name__ == "__main__":
-    chat_loop()
+    import asyncio
+    asyncio.run(chat_loop())
