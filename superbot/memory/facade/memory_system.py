@@ -182,40 +182,42 @@ class MemorySystem:
                 subject = triple.get("s", "") or triple.get("subject", "")
                 relation = triple.get("r", "") or triple.get("relation", "")
                 obj = triple.get("o", "") or triple.get("object", "")
-                # 构建完整的三元组文本（包含 object）
-                # 用 JSON 格式存储三元组，避免字符串解析歧义
-                action_text = json.dumps({
+
+                if not subject or not relation or not obj:
+                    continue
+
+                # Build natural language description for vector search
+                action_text = f"{subject}{relation}{obj}"
+
+                # Store original JSON in metadata
+                triple_json = json.dumps({
                     "s": subject,
                     "r": relation,
                     "o": obj
                 })
-
-                if not action_text.strip():
-                    continue
-
-                # 向量化
                 action_vector = embedding.encode(action_text).tolist()
 
-                # 查询 user_actions 集合
+                # Query user_actions collection for deduplication
                 results = self.vector_store.search(
                     query_vector=action_vector,
                     n=1,
                     collection="user_actions"
                 )
 
-                # 检查相似度
+                # Check similarity for deduplication
                 existing_id = None
                 if results and results[0].get("similarity", 0) >= similarity_threshold:
                     existing_id = results[0]["id"]
                     logger.info("[Memory] _process_buffer() found existing action: {} (similarity: {:.4f})",
                                existing_id, results[0]["similarity"])
                 else:
-                    # 写入新记录
+                    # Add new record
                     new_id = str(uuid.uuid4())
                     self.vector_store.add(
                         ids=[new_id],
                         vectors=[action_vector],
                         documents=[action_text],
+                        metadatas=[{"triple": triple_json}],
                         collection="user_actions"
                     )
                     existing_id = new_id
@@ -384,36 +386,40 @@ class MemorySystem:
                 if result.get("similarity", 0) <= similarity_threshold:
                     continue
 
-                # 直接从 ChromaDB document 字段获取三元组文本
+                # Get triple JSON from metadata
                 vector_id = result.get("id")
-                triple_text = result.get("document", "")
+                metadata = result.get("metadata", {})
+                if not metadata:
+                    continue
 
-                if triple_text:
-                    # 解析 JSON 格式的三元组 {"s": subject, "r": relation, "o": object}
-                    try:
-                        triple_data = json.loads(triple_text)
-                        subject = triple_data.get("s", "") or triple_data.get("subject", "")
-                        relation = triple_data.get("r", "") or triple_data.get("relation", "")
-                        obj = triple_data.get("o", "") or triple_data.get("object", "")
-                    except json.JSONDecodeError:
-                        # 兼容旧格式的字符串解析
-                        parts = triple_text.split(" ", 2)
-                        subject = parts[0] if len(parts) > 0 else ""
-                        relation = parts[1] if len(parts) > 1 else ""
-                        obj = parts[2] if len(parts) > 2 else ""
+                triple_json = metadata.get("triple", "")
+                if not triple_json:
+                    continue
 
-                    triples.append({
-                        "subject": subject,
-                        "relation": relation,
-                        "object": obj,
-                        "triple_text": triple_text,
-                        "similarity": result.get("similarity", 0),
-                        "vector_id": vector_id
-                    })
+                try:
+                    triple_data = json.loads(triple_json)
+                    subject = triple_data.get("s", "")
+                    relation = triple_data.get("r", "")
+                    obj = triple_data.get("o", "")
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning("[Memory] recall() failed to parse triple JSON: {}", e)
+                    continue
+
+                if not subject or not relation or not obj:
+                    continue
+
+                triples.append({
+                    "subject": subject,
+                    "relation": relation,
+                    "object": obj,
+                    "triple_text": triple_json,
+                    "similarity": result.get("similarity", 0),
+                    "vector_id": vector_id
+                })
 
             logger.info("[Memory] recall() returning {} triples", len(triples))
 
-            # 获取 history 中的数据
+            # Get history data
             batch_items = self.history.get_batch()
             buffer_data = batch_items
 

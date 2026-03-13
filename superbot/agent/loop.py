@@ -827,8 +827,6 @@ class AgentLoop:
                 {"role": "user", "content": msg.content},
             ]
 
-        logger.debug("initial_messages for {}:{}: {}", msg.channel, msg.sender_id, initial_messages)
-
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
