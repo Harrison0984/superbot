@@ -138,11 +138,11 @@ class CtripMonitor:
             True if login completed, False if timeout
         """
         logger.info("=" * 50)
-        logger.info("⚠️  检测到登录弹窗，请手动登录...")
+        logger.info("⚠️  Detected login popup, please login manually...")
         logger.info("⚠️  Please login manually in the browser")
         logger.info("=" * 50)
 
-        # 截图二维码区域
+        # Screenshot QR code area
         import os
         from pathlib import Path
         screenshot_dir = Path.home() / ".superbot" / "sessions"
@@ -150,26 +150,26 @@ class CtripMonitor:
         screenshot_path = screenshot_dir / "ctrip_login.png"
 
         try:
-            # 先尝试点击"扫码登录"按钮，让二维码显示出来
+            # First try clicking "scan login" button to show QR code
             scan_login = await page.query_selector('a:has-text("扫码登录"), a:has-text("扫码")')
             if scan_login:
-                logger.info("点击扫码登录按钮...")
+                logger.info("Clicking scan login button...")
                 await scan_login.click()
-                await asyncio.sleep(5)  # 等待二维码生成
+                await asyncio.sleep(5)  # Wait for QR code generation
 
-            # 截图二维码区域
+            # Screenshot QR code area
             qr_element = await page.query_selector('.lg_ercode, [class*="ercode"]')
             if qr_element:
                 await qr_element.screenshot(path=str(screenshot_path))
-                logger.info(f"📱 二维码截图已保存到: {screenshot_path}")
+                logger.info(f"QR code screenshot saved to: {screenshot_path}")
             else:
-                # 如果没找到二维码区域，截图整个页面
+                # If QR code area not found, screenshot entire page
                 await page.screenshot(path=str(screenshot_path), full_page=True)
-                logger.info(f"📱 登录页面截图已保存到: {screenshot_path}")
+                logger.info(f"Login page screenshot saved to: {screenshot_path}")
 
-            logger.info(f"请扫码登录... (截图路径: {screenshot_path})")
+            logger.info(f"Please scan QR code to login... (screenshot path: {screenshot_path})")
         except Exception as e:
-            logger.warning(f"截图失败: {e}")
+            logger.warning(f"Screenshot failed: {e}")
 
         start_time = asyncio.get_event_loop().time()
 
@@ -182,18 +182,18 @@ class CtripMonitor:
                     user_elements = await page.query_selector_all('[class*="user-name"], [class*="username"], [class*="user-info"]')
                     for el in user_elements:
                         if await el.is_visible():
-                            logger.info("✅ 登录成功检测到用户信息")
+                            logger.info("Login successful, detected user info")
                             return True
                 except:
                     pass
 
                 # Also check if popup is gone
-                logger.info("登录弹窗已关闭，继续执行...")
+                logger.info("Login popup closed, continuing...")
                 return True
 
             await asyncio.sleep(3)
 
-        logger.warning("登录等待超时")
+        logger.warning("Login wait timeout")
         return False
 
     async def search_flight(

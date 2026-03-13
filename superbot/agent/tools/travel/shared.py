@@ -6,13 +6,13 @@ from typing import Optional
 from superbot.agent.tools.travel.browser import StealthBrowser
 from superbot.agent.tools.travel.session import get_session_manager
 
-# 全局共享的 browser 实例
+# Globally shared browser instance
 _browser: Optional[StealthBrowser] = None
 _browser_lock = asyncio.Lock()
 
 
 async def get_shared_browser() -> StealthBrowser:
-    """获取共享的浏览器实例"""
+    """Get shared browser instance."""
     global _browser
     async with _browser_lock:
         if _browser is None:
@@ -22,7 +22,7 @@ async def get_shared_browser() -> StealthBrowser:
 
 
 async def close_shared_browser():
-    """关闭共享的浏览器实例"""
+    """Close shared browser instance."""
     global _browser
     async with _browser_lock:
         if _browser:

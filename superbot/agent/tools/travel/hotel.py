@@ -16,9 +16,9 @@ logger = get_logger(__name__)
 class HotelTool(Tool):
     """Search hotels using Ctrip/Trip.com."""
 
-    # 配置
-    WAIT_TIMEOUT = 300  # 5分钟
-    POLL_INTERVAL = 5   # 5秒
+    # Config
+    WAIT_TIMEOUT = 300  # 5 minutes
+    POLL_INTERVAL = 5   # 5 seconds
 
     @property
     def name(self) -> str:
@@ -102,36 +102,36 @@ class HotelTool(Tool):
             browser = await self._get_browser()
             page = await browser.new_page()
 
-            # 1. 检查是否有保存的 Cookie
+            # 1. Check if there's a saved Cookie
             has_saved_session = self.session.has_session()
             is_logged_in = False
 
             if has_saved_session:
-                logger.info("加载已保存的 Cookie...")
+                logger.info("Loading saved Cookie...")
                 await self.session.apply_cookies_async(page.context)
 
-            # 2. 必须检查页面登录状态（有cookie也可能失效）
-            logger.info("检查页面登录状态...")
+            # 2. Must check page login status (cookie may be invalid)
+            logger.info("Checking page login status...")
             is_logged_in = await verify_login(page, "https://hotels.ctrip.com/hotels/list")
 
             if is_logged_in:
-                logger.info("已登录，直接搜索...")
+                logger.info("Already logged in, searching directly...")
             elif has_saved_session:
-                logger.info("Cookie 失效，需要重新登录...")
+                logger.info("Cookie invalid, need to re-login...")
             else:
-                logger.info("未登录，需要登录...")
+                logger.info("Not logged in, need to login...")
 
             if not is_logged_in:
-                # 3. 未登录则生成二维码
-                logger.info("未登录，生成二维码...")
+                # 3. If not logged in, generate QR code
+                logger.info("Not logged in, generating QR code...")
                 success, qr_path = await self.session.generate_qr_code(page)
                 if success:
-                    # 启动后台任务
+                    # Start background task
                     asyncio.create_task(
                         self._wait_for_login_and_search(city, checkin, checkout, keywords, page)
                     )
 
-                    # 立即返回
+                    # Return immediately
                     return json.dumps({
                         "content": "请扫码登录，登录后自动开始搜索",
                         "media": [str(qr_path)] if qr_path else []
@@ -139,7 +139,7 @@ class HotelTool(Tool):
                 else:
                     return tool_error("qr_generation_failed", "生成登录二维码失败，请重试")
 
-            # 4. 已登录，直接搜索
+            # 4. Already logged in, search directly
             return await self._do_search(city, checkin, checkout, keywords, page)
 
         except Exception as e:
@@ -154,28 +154,28 @@ class HotelTool(Tool):
         keywords: str,
         page
     ):
-        """后台等待登录并搜索"""
+        """Wait for login in background and search."""
         for elapsed in range(0, self.WAIT_TIMEOUT, self.POLL_INTERVAL):
             await asyncio.sleep(self.POLL_INTERVAL)
 
-            # 检查登录（需要刷新页面检查二维码是否消失）
+            # Check login (need to refresh page to check if QR code disappeared)
             try:
                 await page.reload()
                 is_logged_in = await verify_login(page, "https://hotels.ctrip.com/hotels/list")
                 if is_logged_in:
-                    # 登录成功，继续搜索
+                    # Login successful, continue searching
                     result = await self._do_search(city, checkin, checkout, keywords, page)
                     self.send_message(content=result, to="llm")
                     return
             except Exception as e:
-                logger.warning(f"检查登录状态失败: {e}")
+                logger.warning(f"Failed to check login status: {e}")
 
-        # 超时
+        # Timeout
         await page.close()
         self.send_message(content="扫码超时，请重试", to="")
 
     async def _do_search(self, city: str, checkin: str, checkout: str, keywords: str, page) -> str:
-        """执行酒店搜索"""
+        """Execute hotel search."""
         try:
             base_url = "https://hotels.ctrip.com/hotels/list"
             params = f"?city={city}&checkin={checkin}&checkout={checkout}"

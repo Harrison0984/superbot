@@ -55,10 +55,10 @@ class Tool(ABC):
         "object": dict,
     }
 
-    _bus: MessageBus | None = None  # 类属性
+    _bus: MessageBus | None = None  # Class attribute
 
     def set_bus(self, bus: MessageBus) -> None:
-        """依赖注入消息总线"""
+        """Dependency inject message bus."""
         self._bus = bus
 
     def initialize(self, bus: "MessageBus") -> None:

@@ -51,8 +51,8 @@ class SessionManager:
     async def check_login(self, page: Page) -> bool:
         """Check if user is logged in by checking for login QR code on current page."""
         try:
-            # 检查当前页面是否有登录二维码/登录弹窗
-            # 如果没有二维码，说明已登录（或者页面不需要登录）
+            # Check if current page has login QR code/login popup
+            # If no QR code, already logged in (or page doesn't require login)
 
             qr_selectors = [
                 '[class*="qrcode"]',
@@ -71,12 +71,12 @@ class SessionManager:
                 except:
                     pass
 
-            # 没有找到登录二维码，认为已登录
+            # No login QR code found, assume logged in
             logger.info("No login QR code found, assuming logged in")
             return True
         except Exception as e:
             logger.warning(f"Error checking login: {e}")
-            return True  # 出错时默认已登录
+            return True  # Default to logged in on error
 
     async def check_login_async(self, page: Page) -> bool:
         """Check if user is logged in (standalone, doesn't require page navigation)."""
@@ -125,16 +125,16 @@ class SessionManager:
             qr_element = await page.query_selector('.lg_ercode, [class*="ercode"]')
             if qr_element:
                 await qr_element.screenshot(path=str(screenshot_path))
-                logger.info(f"📱 二维码截图已保存到: {screenshot_path}")
+                logger.info(f"QR code screenshot saved to: {screenshot_path}")
             else:
                 await page.screenshot(path=str(screenshot_path), full_page=True)
-                logger.info(f"📱 登录页面截图已保存到: {screenshot_path}")
+                logger.info(f"Login page screenshot saved to: {screenshot_path}")
 
-            logger.info(f"请扫码登录: {screenshot_path}")
+            logger.info(f"Please scan QR code to login: {screenshot_path}")
             return True, screenshot_path
 
         except Exception as e:
-            logger.error(f"生成二维码出错: {e}")
+            logger.error(f"Error generating QR code: {e}")
             return False, screenshot_path
 
     async def apply_cookies_async(self, context) -> bool:
@@ -167,19 +167,19 @@ _session_manager: Optional[SessionManager] = None
 
 
 async def verify_login(page: Page, url: str) -> bool:
-    """验证登录状态
+    """Verify login status.
 
-    流程：
-    1. 导航到指定页面
-    2. 检查页面顶部是否有"尊敬的xxx"或"我的订单"
-    3. 返回 True(已登录)/False(未登录)
+    Flow:
+    1. Navigate to specified page
+    2. Check if page header has "尊敬的xxx" or "我的订单"
+    3. Return True(logged in)/False(not logged in)
     """
     try:
-        # 导航到指定页面
+        # Navigate to specified page
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
         await page.wait_for_load_state("networkidle")
 
-        # 检测用户名称
+        # Detect user name
         user_selectors = [
             '.user-name',
             '.username',
@@ -205,17 +205,17 @@ async def verify_login(page: Page, url: str) -> bool:
                 if el and await el.is_visible():
                     text = await el.inner_text()
                     if text and text.strip():
-                        # 有"尊敬的"或"我的订单" → 已登录
+                        # Has "尊敬的" or "我的订单" -> logged in
                         if "尊敬的" in text or "我的订单" in text:
-                            logger.info("已登录，检测到用户: %s", text[:30])
+                            logger.info("Logged in, detected user: %s", text[:30])
                             return True
             except Exception:
                 continue
 
-        logger.info("未检测到用户元素，视为未登录")
+        logger.info("No user element detected, considered not logged in")
         return False
     except Exception as e:
-        logger.warning("验证登录失败: %s", e)
+        logger.warning("Login verification failed: %s", e)
         return False
 
 

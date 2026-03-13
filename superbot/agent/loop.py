@@ -83,7 +83,6 @@ class AgentLoop:
         # Initialize experience store for tool execution history
         self.workspace = workspace
 
-        # Initialize experience store for tool execution history
         self._experience_store = None
         self._init_experience_store()
         self.model = model or provider.get_default_model()
@@ -98,7 +97,7 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        # 获取需要 build_messages 的 channels（从配置中动态获取）
+        # Get channels that need build_messages (dynamically from config)
         self._channels_with_memory: set[str] = {"cli"}
         if channels_config:
             for name in ("feishu", "telegram", "whatsapp", "qq"):
@@ -137,9 +136,9 @@ class AgentLoop:
         from superbot.agent.idle_task import DEFAULT_IDLE_THRESHOLD
         self._idle_tasks: dict[str, "IdleTask"] = {}  # task_type -> task
         self._running_idle_tasks: dict[str, asyncio.Task] = {}  # task_type -> running task
-        self._last_task_end_time: float | None = None  # 上一个任务结束时间
-        self._idle_check_interval = 60  # 空闲检查间隔（秒）
-        self._idle_threshold = DEFAULT_IDLE_THRESHOLD  # 默认空闲阈值（秒）
+        self._last_task_end_time: float | None = None  # End time of last task
+        self._idle_check_interval = 60  # Idle check interval in seconds
+        self._idle_threshold = DEFAULT_IDLE_THRESHOLD  # Default idle threshold in seconds
 
         # Register default idle tasks
         self._register_default_idle_tasks()
@@ -203,15 +202,15 @@ class AgentLoop:
         task: "IdleTask",
         idle_threshold_seconds: int | None = None,
     ) -> None:
-        """注册空闲任务
+        """Register an idle task.
 
         Args:
-            task: 要注册的任务实例
-            idle_threshold_seconds: 任务的空闲阈值（秒），默认使用任务自身的 idle_threshold_seconds
+            task: The task instance to register
+            idle_threshold_seconds: Idle threshold in seconds, defaults to task's own idle_threshold_seconds
         """
         from superbot.agent.idle_task import DEFAULT_IDLE_THRESHOLD
         threshold = idle_threshold_seconds if idle_threshold_seconds is not None else task.idle_threshold_seconds
-        # 存储阈值信息
+        # Store threshold information
         task._registered_threshold = threshold  # type: ignore[attr-defined]
         self._idle_tasks[task.task_type] = task
         logger.info(
@@ -222,7 +221,7 @@ class AgentLoop:
         )
 
     def unregister_idle_task(self, task_type: str) -> bool:
-        """注销空闲任务"""
+        """Unregister an idle task."""
         if task_type in self._idle_tasks:
             task = self._idle_tasks.pop(task_type)
             logger.info("Unregistered idle task: {} (type: {})", task.name, task_type)
@@ -230,7 +229,7 @@ class AgentLoop:
         return False
 
     def list_idle_tasks(self) -> list[str]:
-        """列出已注册的空闲任务类型"""
+        """List registered idle task types."""
         return list(self._idle_tasks.keys())
 
     async def _connect_mcp(self) -> None:
@@ -552,7 +551,7 @@ class AgentLoop:
                     # Calculate elapsed time
                     elapsed = time.time() - start_time
 
-                    # 解析工具返回值，全部交给 LLM 处理
+                    # Parse tool return value, delegate to LLM
                     try:
                         result_data = json.loads(result)
                         tool_content = result_data.get("content", result)
@@ -561,7 +560,7 @@ class AgentLoop:
                         tool_content = result
                         tool_media = []
 
-                    # 添加工具返回的媒体文件
+                    # Add media files returned by tool
                     user_media.extend(tool_media)
 
                     # Record action result to experience store (with time cost)
@@ -569,7 +568,7 @@ class AgentLoop:
                         tool_call.name, args, tool_content, elapsed
                     )
 
-                    # 交给 LLM 处理
+                    # Delegate to LLM
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, tool_content
                     )
@@ -607,7 +606,7 @@ class AgentLoop:
 
         while self._running:
             try:
-                # 同时监听 inbound 和 idle_timer
+                # Listen to both inbound and idle_timer simultaneously
                 tasks = [
                     asyncio.create_task(self.bus.consume_inbound()),
                     asyncio.create_task(self._idle_timer()),
@@ -617,7 +616,7 @@ class AgentLoop:
                     return_when=asyncio.FIRST_COMPLETED
                 )
 
-                # 取消未完成的任务
+                # Cancel pending tasks
                 for t in pending:
                     t.cancel()
 
@@ -628,10 +627,10 @@ class AgentLoop:
                         continue
 
                     if result is None:
-                        # idle_timer 触发，检查空闲任务
+                        # idle_timer triggered, check idle tasks
                         await self._check_and_run_idle_tasks()
                     else:
-                        # 处理用户消息
+                        # Process user message
                         msg = result
                         if msg.content.strip().lower() == "/stop":
                             await self._handle_stop(msg)
@@ -651,11 +650,11 @@ class AgentLoop:
                 logger.exception("Error in agent loop")
 
     async def _idle_timer(self) -> None:
-        """空闲定时器，定期触发检查空闲任务"""
+        """Idle timer, periodically triggers idle task check."""
         await asyncio.sleep(self._idle_check_interval)
 
     async def _check_and_run_idle_tasks(self) -> None:
-        """检查并执行空闲任务（由定时器调用）"""
+        """Check and execute idle tasks (called by timer)."""
         if self._last_task_end_time is None:
             return
 
@@ -665,35 +664,35 @@ class AgentLoop:
             await self._run_idle_tasks(idle_seconds)
 
     async def _run_idle_tasks(self, idle_seconds: float) -> None:
-        """检查并执行空闲任务
+        """Check and execute idle tasks.
 
         Args:
-            idle_seconds: 当前空闲时长（秒）
+            idle_seconds: Current idle duration in seconds.
         """
         for task_type, task in list(self._idle_tasks.items()):
-            # 检查是否已在运行（同类型过滤）
+            # Check if already running (same type filter)
             if task_type in self._running_idle_tasks:
                 continue
 
-            # 获取任务的空闲阈值
+            # Get task's idle threshold
             threshold = getattr(task, "_registered_threshold", task.idle_threshold_seconds)
 
-            # 检查空闲时间是否达到阈值
+            # Check if idle time meets threshold
             if idle_seconds < threshold:
                 continue
 
-            # 检查任务是否应该执行
+            # Check if task should run
             if not await task.should_run(self, idle_seconds):
                 continue
 
-            # 启动任务
+            # Start task
             logger.info("Executing idle task: {} (type: {})", task.name, task_type)
             t = asyncio.create_task(self._execute_idle_task(task, task_type))
             self._running_idle_tasks[task_type] = t
             t.add_done_callback(lambda _, k=task_type: self._running_idle_tasks.pop(k, None))
 
     async def _execute_idle_task(self, task: "IdleTask", task_type: str) -> None:
-        """执行单个空闲任务"""
+        """Execute a single idle task."""
         try:
             await task.execute(self)
         except Exception:
@@ -739,7 +738,7 @@ class AgentLoop:
                     content="Sorry, I encountered an error.", to=msg.to,
                 ))
             finally:
-                # 记录任务结束时间，用于计算空闲时长
+                # Record task end time for idle duration calculation
                 self._last_task_end_time = time.time()
 
     async def close_mcp(self) -> None:
@@ -813,8 +812,8 @@ class AgentLoop:
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
 
-        # 只有来自 channel 或 CLI 的消息才执行 build_messages
-        # email 是转发源，不需要 build_messages
+        # Only messages from channel or CLI execute build_messages
+        # email is a forward source, no need for build_messages
         if msg.channel in self._channels_with_memory:
             initial_messages = self.context.build_messages(
                 current_message=msg.content,
@@ -846,7 +845,7 @@ class AgentLoop:
             final_content = "I've completed processing but have no response to give."
 
         # Store to vector memory in real-time if enabled
-        # 只有来自 channel 或 CLI 的消息才存储记忆
+        # Only messages from channel or CLI store memory
         if self.memory_system is not None and msg.channel in self._channels_with_memory:
             try:
                 # Store assistant messages

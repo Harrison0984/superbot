@@ -18,9 +18,9 @@ logger = get_logger(__name__)
 class FlightTool(Tool):
     """Search flights using Ctrip/Trip.com."""
 
-    # 配置
-    WAIT_TIMEOUT = 300  # 5分钟
-    POLL_INTERVAL = 5   # 5秒
+    # Config
+    WAIT_TIMEOUT = 300  # 5 minutes
+    POLL_INTERVAL = 5   # 5 seconds
 
     @property
     def name(self) -> str:
@@ -75,50 +75,50 @@ class FlightTool(Tool):
             browser = await self._get_browser()
             page = await browser.new_page()
 
-            # 1. 检查是否有保存的 Cookie
+            # 1. Check if there's a saved Cookie
             has_saved_session = self.session.has_session()
             is_logged_in = False
 
             if has_saved_session:
-                logger.info("加载已保存的 Cookie...")
+                logger.info("Loading saved Cookie...")
                 await self.session.apply_cookies_async(page.context)
 
-            # 2. 必须检查页面登录状态（有cookie也可能失效）
-            logger.info("检查页面登录状态...")
+            # 2. Must check page login status (cookie may be invalid)
+            logger.info("Checking page login status...")
             is_logged_in = await verify_login(page, "https://flights.ctrip.com/online/list")
 
             if is_logged_in:
-                logger.info("已登录，直接搜索...")
+                logger.info("Already logged in, searching directly...")
             elif has_saved_session:
-                logger.info("Cookie 失效，需要重新登录...")
+                logger.info("Cookie invalid, need to re-login...")
             else:
-                logger.info("未登录，需要登录...")
+                logger.info("Not logged in, need to login...")
 
             if not is_logged_in:
-                # 3. 未登录则生成二维码
-                logger.info("未登录，生成二维码...")
+                # 3. If not logged in, generate QR code
+                logger.info("Not logged in, generating QR code...")
                 try:
                     success, qr_path = await self.session.generate_qr_code(page)
                 except Exception as e:
-                    logger.warning("生成二维码出错: %s", e)
-                    # 如果生成二维码出错，可能是页面自动跳转了（已登录）
-                    # 再次检查登录状态
-                    logger.info("当前页面URL: %s", page.url)
+                    logger.warning("QR code generation error: %s", e)
+                    # If QR code generation fails, page may have auto-redirected (already logged in)
+                    # Check login status again
+                    logger.info("Current page URL: %s", page.url)
                     is_logged_in = await verify_login(page, "https://flights.ctrip.com/online/list")
-                    logger.info("检查登录状态: %s", is_logged_in)
+                    logger.info("Checking login status: %s", is_logged_in)
                     if is_logged_in:
-                        logger.info("页面已登录，直接搜索")
+                        logger.info("Page already logged in, searching directly")
                         result = await self._do_search(from_city, to_city, date, page)
                         return result
                     success, qr_path = False, None
 
                 if success:
-                    # 启动后台任务
+                    # Start background task
                     asyncio.create_task(
                         self._wait_for_login_and_search(from_city, to_city, date, page)
                     )
 
-                    # 立即返回
+                    # Return immediately
                     return json.dumps({
                         "content": "请扫码登录，登录后自动开始搜索",
                         "media": [str(qr_path)] if qr_path else []
@@ -126,7 +126,7 @@ class FlightTool(Tool):
                 else:
                     return tool_error("qr_generation_failed", "生成登录二维码失败，请重试")
 
-            # 4. 已登录，直接搜索
+            # 4. Already logged in, search directly
             return await self._do_search(from_city, to_city, date, page)
 
         except Exception as e:
@@ -140,10 +140,10 @@ class FlightTool(Tool):
         date: str,
         page
     ):
-        """后台等待登录并搜索"""
+        """Wait for login in background and search."""
         async def _check_login_popup(page: Page) -> bool:
-            """检查是否有登录弹窗/二维码（未登录）"""
-            # 先尝试点击登录按钮，让弹窗显示出来
+            """Check if there's a login popup/QR code (not logged in)."""
+            # First try clicking login button to show popup
             try:
                 login_link = await page.query_selector('text=登录')
                 if login_link:
@@ -152,7 +152,7 @@ class FlightTool(Tool):
             except:
                 pass
 
-            # 登录弹窗/二维码选择器
+            # Login popup/QR code selector
             popup_selectors = [
                 '[class*="login-modal"]',
                 '[class*="login-dialog"]',
@@ -182,7 +182,7 @@ class FlightTool(Tool):
                 except:
                     continue
 
-            # 检查是否有"扫码登录"等文字提示（说明是登录弹窗）
+            # Check for QR login prompts (indicates login popup)
             qr_prompts = await page.query_selector_all('text=扫码登录, text=请扫码, text=手机号登录, text=账号密码登录')
             if qr_prompts:
                 for prompt in qr_prompts:
@@ -195,7 +195,7 @@ class FlightTool(Tool):
             return False
 
         async def _check_logged_in(page: Page) -> bool:
-            """检查是否已登录（有用户信息元素）"""
+            """Check if logged in (has user info elements)."""
             logged_in_indicators = [
                 '[class*="user-name"]',
                 '[class*="user-info"]',
@@ -222,64 +222,64 @@ class FlightTool(Tool):
             return False
 
         async def check_login_status(page: Page) -> tuple[bool, str]:
-            """检查登录状态
+            """Check login status.
 
             Returns:
-                (is_logged_in, status): 登录状态和状态描述
+                (is_logged_in, status): Login status and status description
             """
-            # 如果页面跳转到 passport.ctrip.com，说明用户正在登录
+            # If page redirects to passport.ctrip.com, user is logging in
             if "passport.ctrip.com" in page.url:
-                # 扫码成功，页面跳转了！返回True表示登录成功，需要跳回搜索页面
+                # QR scan successful, page redirected! Return True means login success, need to go back to search page
                 return True, "login_redirect"
 
-            # 页面跳转到了其他页面（比如首页），说明登录成功
+            # Page redirected to other page (like home), login successful
             if "flights.ctrip.com" not in page.url and page.url != "about:blank":
                 return True, "page_redirect"
 
-            # 先检查是否有登录弹窗/二维码
+            # First check if there's a login popup/QR code
             has_popup = await _check_login_popup(page)
             if has_popup:
                 return False, "login_popup"
 
-            # 检查是否已登录
+            # Check if already logged in
             is_logged_in = await _check_logged_in(page)
             if is_logged_in:
                 return True, "logged_in"
 
-            # 没有弹窗也没有登录元素，可能不需要登录
+            # No popup or login elements, may not need login
             return True, "unknown"
 
         for elapsed in range(0, self.WAIT_TIMEOUT, self.POLL_INTERVAL):
             await asyncio.sleep(self.POLL_INTERVAL)
             
-            # 检查登录状态
+            # Check login status
             try:
                 is_logged_in, status = await check_login_status(page)
-                logger.info("登录状态: is_logged_in=%s, status=%s", is_logged_in, status)
+                logger.info("Login status: is_logged_in=%s, status=%s", is_logged_in, status)
 
                 if is_logged_in:
-                    # 页面跳转了，说明扫码成功，跳回搜索页面
+                    # Page redirected, QR scan successful, go back to search page
                     if status in ("login_redirect", "page_redirect"):
-                        logger.info("检测到页面跳转，扫码成功！正在跳转回搜索页面...")
-                        # 跳回搜索页面
+                        logger.info("Page redirect detected, QR scan successful! Redirecting back to search page...")
+                        # Go back to search page
                         search_url = f"https://flights.ctrip.com/online/listonline/list/oneway-{from_city}-{to_city}?depdate={date}"
                         await page.goto(search_url)
                         await page.wait_for_load_state("networkidle")
 
-                    # 保存cookie并搜索
+                    # Save cookie and search
                     await self.session.save_cookies(page.context)
                     result = await self._do_search(from_city, to_city, date, page)
                     self.send_message(content=result, to="llm")
                     return
             except Exception as e:
-                logger.warning("检查登录状态失败: %s", e)
+                logger.warning("Failed to check login status: %s", e)
 
-        # 超时
+        # Timeout
         await page.close()
         self.send_message(content="扫码超时，请重试", to="")
 
     async def _do_search(self, from_city: str, to_city: str, date: str, page) -> str:
-        """执行航班搜索"""
+        """Execute flight search."""
         try:
             from_code = from_city.upper() if len(from_city) == 3 else from_city
             to_code = to_city.upper() if len(to_city) == 3 else to_city

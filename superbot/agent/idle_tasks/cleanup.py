@@ -12,9 +12,9 @@ if TYPE_CHECKING:
 
 
 class CleanupIdleTask(IdleTask):
-    """空闲时执行清理任务"""
+    """Cleanup task executed during idle time."""
 
-    def __init__(self, min_idle_seconds: int = 30):
+    def __init__(self, min_idle_seconds: int = 14400):  # 4 hours
         self.min_idle_seconds = min_idle_seconds
 
     @property
@@ -33,7 +33,7 @@ class CleanupIdleTask(IdleTask):
         return idle_seconds >= self.min_idle_seconds
 
     async def execute(self, agent: "AgentLoop") -> None:
-        # 清理临时文件
+        # Clean up temp files
         temp_dir = agent.workspace / "temp"
         if temp_dir.exists():
             for f in temp_dir.glob("*.tmp"):
