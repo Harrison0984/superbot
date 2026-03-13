@@ -1,70 +1,48 @@
 """统一缓存模块：通用的数量/大小限制缓冲区"""
 from datetime import datetime
-from typing import Dict, Any, List, Callable, Optional
+from typing import Dict, Any, List, Optional
 
-import numpy as np
 from loguru import logger
 
 
 class CacheBuffer:
     """
     统一缓存：支持数量和大小两个维度触发
-
-    通过传入不同的处理函数来实现不同功能：
-    - 语义去重：传入相似度检测函数
-    - 批量处理：传入 LLM 处理函数
     """
 
     def __init__(
         self,
-        buffer_count: int = 3,
-        buffer_size: int = 2048,
-        # 可选：用于语义去重的相似度检测
-        similarity_func: Optional[Callable[[np.ndarray, np.ndarray], float]] = None,
-        similarity_threshold: float = 0.95
+        buffer_count: int = 10,
+        buffer_size: int = 4096,
     ):
         self.buffer_count = buffer_count
         self.buffer_size = buffer_size
-        self.similarity_func = similarity_func
-        self.similarity_threshold = similarity_threshold
 
         self.buffer: List[Dict[str, Any]] = []
         self._total_bytes: int = 0
 
-    def push(self, text: str, vector: np.ndarray) -> bool:
+    def push(self, text: str, source: str = "USER") -> bool:
         """
-        添加内容到缓冲区（FIFO 淘汰）
+        添加内容到缓冲区
+
+        参数:
+            text: 文本内容
+            source: 来源标识，可选值为 "USER" 或 "ASSISTANT"，默认为 "USER"
 
         返回:
             True 表示添加成功
-            False 表示被去重过滤（当设置了 similarity_func 时）
         """
-        # 如果设置了相似度检测，先检查是否重复
-        if self.similarity_func is not None and self.buffer:
-            for existing in self.buffer:
-                similarity = self.similarity_func(vector, existing["vector"])
-                if similarity >= self.similarity_threshold:
-                    logger.debug("[CacheBuffer] rejected: semantic duplicate (similarity={:.2f} >= {})", similarity, self.similarity_threshold)
-                    return False  # 语义重复，拒绝添加
-
         text_bytes = len(text.encode('utf-8'))
 
         # 先添加新内容
         self.buffer.append({
             "text": text,
-            "vector": vector,
             "text_bytes": text_bytes,
-            "timestamp": datetime.now()
+            "timestamp": datetime.now(),
+            "source": source
         })
         self._total_bytes += text_bytes
         logger.debug("[CacheBuffer] pushed: buffer_size={}/{}, total_bytes={}", len(self.buffer), self.buffer_count, self._total_bytes)
-
-        # 如果超过阈值，FIFO 淘汰最旧的内容
-        while (len(self.buffer) > self.buffer_count or
-               self._total_bytes > self.buffer_size) and self.buffer:
-            removed = self.buffer.pop(0)  # 移除最旧的
-            self._total_bytes -= removed["text_bytes"]
-            logger.debug("[CacheBuffer] evicted oldest item, buffer_size={}", len(self.buffer))
 
         return True
 
@@ -90,10 +68,6 @@ class CacheBuffer:
         """获取批次的文本列表"""
         return [item["text"] for item in self.buffer]
 
-    def get_batch_vectors(self) -> List[np.ndarray]:
-        """获取批次的向量列表"""
-        return [item["vector"] for item in self.buffer]
-
     def clear(self):
         """清空缓冲区"""
         self.buffer = []
@@ -116,3 +90,34 @@ class CacheBuffer:
             "size_limit": self.buffer_size,
             "should_process": self.should_process()
         }
+
+
+class FIFOBuffer(CacheBuffer):
+    """
+    先进先出缓冲区：当超过 buffer_count 或 buffer_size 阈值时，移除最旧的内容
+    """
+
+    def push(self, text: str, source: str = "USER") -> bool:
+        """
+        添加内容到缓冲区（FIFO 淘汰）
+        """
+        text_bytes = len(text.encode('utf-8'))
+
+        # 先添加新内容
+        self.buffer.append({
+            "text": text,
+            "text_bytes": text_bytes,
+            "timestamp": datetime.now(),
+            "source": source
+        })
+        self._total_bytes += text_bytes
+        logger.debug("[FIFOBuffer] pushed: buffer_size={}/{}, total_bytes={}", len(self.buffer), self.buffer_count, self._total_bytes)
+
+        # 如果超过阈值，FIFO 淘汰最旧的内容
+        while (len(self.buffer) > self.buffer_count or
+               self._total_bytes > self.buffer_size) and self.buffer:
+            removed = self.buffer.pop(0)  # 移除最旧的
+            self._total_bytes -= removed["text_bytes"]
+            logger.debug("[FIFOBuffer] evicted oldest item, buffer_size={}", len(self.buffer))
+
+        return True

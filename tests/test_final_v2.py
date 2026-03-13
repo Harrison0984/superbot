@@ -8,7 +8,30 @@ import mlx_lm
 from mlx_lm import load
 
 # ==================== 配置 ====================
-MODEL_PATH = "/Users/heyunpeng/workstation/src/MLX-Qwen3.5-4B-Claude-4.6-Opus"
+import argparse
+
+# 默认模型路径
+DEFAULT_MODEL = "/Users/heyunpeng/workstation/src/MLX-Qwen3.5-4B-Claude-4.6-Opus"
+MODEL_PATHS = {
+    "4b": "/Users/heyunpeng/workstation/src/MLX-Qwen3.5-4B-Claude-4.6-Opus",
+    "9b": "/Users/heyunpeng/workstation/src/MLX-Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-6bit",
+}
+
+# 解析命令行参数
+parser = argparse.ArgumentParser(description="Prompt 幻觉优化测试")
+parser.add_argument("--model", "-m", type=str, default=None,
+                    help="模型路径或别名 (4b, 9b)")
+parser.add_argument("--test", "-t", choices=["prompt", "tokens", "hallucination", "all"], default="all")
+args = parser.parse_args()
+
+# 确定模型路径
+if args.model:
+    if args.model in MODEL_PATHS:
+        MODEL_PATH = MODEL_PATHS[args.model]
+    else:
+        MODEL_PATH = args.model
+else:
+    MODEL_PATH = DEFAULT_MODEL
 
 # 配置日志
 logging.basicConfig(
@@ -18,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 加载模型一次
-logger.info("加载模型...")
+logger.info(f"加载模型: {MODEL_PATH}")
 model, tokenizer = load(MODEL_PATH)
 logger.info("模型加载完成\n")
 
@@ -201,11 +224,6 @@ def test_system_prompt():
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Prompt 幻觉优化测试")
-    parser.add_argument("--test", choices=["prompt", "tokens", "hallucination", "all"], default="all")
-    args = parser.parse_args()
-
     if args.test in ["prompt", "all"]:
         test_prompt_versions()
 
@@ -220,9 +238,16 @@ def extract_triples_only(text: str) -> list:
     """仅提取三元组"""
     logger.info(f"[仅三元组] 输入文本 ({len(text)}字): {text[:30]}...")
 
-    # 简洁的 prompt
+    # 优化的 prompt - 通用规则
     prompt = f'''<|im_start|>system
-从用户输入中提取事实三元组。格式：[{{"s":"主语","r":"关系","o":"宾语"}}]
+从用户输入中提取事实三元组。
+
+规则：
+1. 保持原文主语不变，不要替换
+2. 关系用原文词汇
+3. 如"你是包子"提取为(你, 是, 包子)
+
+格式：[{{"s":"主语","r":"关系","o":"宾语"}}]
 <|im_end|>
 <|im_start|>user
 {text}

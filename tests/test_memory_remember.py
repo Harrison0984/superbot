@@ -27,7 +27,7 @@ def get_real_llm():
     from superbot.memory.models.providers import LocalMLXProvider
     from mlx_lm import load
 
-    model_path = "/Users/heyunpeng/workstation/src/models/Qwen3-8B-Instruct-4bit"
+    model_path = "/Users/heyunpeng/workstation/src/MLX-Qwen3.5-4B-Claude-4.6-Opus"
     model, tokenizer = load(model_path)
 
     return LocalMLXProvider(model, tokenizer)
