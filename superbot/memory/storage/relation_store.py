@@ -43,14 +43,13 @@ class RelationStore:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS memory_nodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                raw_id INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 tag TEXT,
                 summary TEXT NOT NULL,
                 vector_id TEXT,
                 entities TEXT,
                 facts TEXT,
-                FOREIGN KEY (raw_id) REFERENCES raw_logs(id)
+                raw_ids TEXT
             )
         """)
 
@@ -110,27 +109,27 @@ class RelationStore:
 
     def add_memory_node(
         self,
-        raw_id: int,
         tag: str,
         summary: str,
         vector_id: str,
         entities: List[Dict] = None,
-        facts: List[str] = None
+        facts: List[str] = None,
+        raw_ids: List[int] = None
     ) -> int:
         """Add memory node"""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO memory_nodes (raw_id, tag, summary, vector_id, entities, facts)
+                INSERT INTO memory_nodes (tag, summary, vector_id, entities, facts, raw_ids)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
-                raw_id,
                 tag,
                 summary,
                 vector_id,
                 json.dumps(entities) if entities else None,
-                json.dumps(facts) if facts else None
+                json.dumps(facts) if facts else None,
+                json.dumps(raw_ids) if raw_ids else None
             ))
             conn.commit()
             return cursor.lastrowid
@@ -170,13 +169,13 @@ class RelationStore:
 
             return {
                 "id": row[0],
-                "raw_id": row[1],
-                "timestamp": row[2],
-                "tag": row[3],
-                "summary": row[4],
-                "vector_id": row[5],
-                "entities": json.loads(row[6]) if row[6] else [],
-                "facts": json.loads(row[7]) if row[7] else []
+                "timestamp": row[1],
+                "tag": row[2],
+                "summary": row[3],
+                "vector_id": row[4],
+                "entities": json.loads(row[5]) if row[5] else [],
+                "facts": json.loads(row[6]) if row[6] else [],
+                "raw_ids": json.loads(row[7]) if row[7] else []
             }
         finally:
             conn.close()
@@ -326,7 +325,7 @@ class EnhancedRelationStore(RelationStore):
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, raw_id, timestamp, tag, summary, vector_id, entities, facts
+                SELECT id, timestamp, tag, summary, vector_id, entities, facts, raw_ids
                 FROM memory_nodes
                 ORDER BY id DESC
             """)
@@ -335,13 +334,13 @@ class EnhancedRelationStore(RelationStore):
             for row in rows:
                 results.append({
                     "id": row[0],
-                    "raw_id": row[1],
-                    "timestamp": row[2],
-                    "tag": row[3],
-                    "summary": row[4],
-                    "vector_id": row[5],
-                    "entities": row[6],
-                    "facts": row[7],
+                    "timestamp": row[1],
+                    "tag": row[2],
+                    "summary": row[3],
+                    "vector_id": row[4],
+                    "entities": row[5],
+                    "facts": row[6],
+                    "raw_ids": json.loads(row[7]) if row[7] else []
                 })
             return results
         finally:

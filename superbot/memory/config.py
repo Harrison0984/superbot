@@ -101,6 +101,95 @@ class Config(BaseModel):
     摘要+三元组提取的最大 token 数
     """
 
+    # ==================== 反思配置 ====================
+
+    reflection_timeout: int = 3600
+    """
+    反思触发空闲超时时间（秒）
+
+    含义：系统空闲多长时间后触发反思
+    - 默认 1 小时（3600秒）
+    """
+
+    reflection_prompt: str = '''<|im_start|>system
+你是一个记忆分析助手。请对以下三元组进行逻辑评分（0-1分），评估其准确性和有效性：
+- 0分：无意义、重复或错误的三元组
+- 0.5分：基本有效但不够准确
+- 1分：完全正确且有价值
+
+请返回 JSON 格式的评分结果：
+[{"id": "xxx", "s": "主语", "r": "关系", "o": "宾语", "score": 0.85}, ...]
+<|im_end|>
+<|im_start|>user
+三元组列表：
+{triples}
+<|im_end|>
+<|im_start|>assistant
+'''
+    """
+    三元组评分反思提示词模板
+
+    占位符:
+    - {triples}: 三元组列表 JSON
+    """
+
+    reflection_summary_prompt: str = '''<|im_start|>system
+你是一个记忆分析助手。请对以下摘要进行逻辑评分（0-1分），评估其准确性和有效性：
+- 0分：无意义、重复或错误的摘要
+- 0.5分：基本有效但不够准确
+- 1分：完全正确且有价值
+
+请返回 JSON 格式的评分结果：
+[{"id": "xxx", "summary": "摘要内容", "score": 0.85}, ...]
+<|im_end|>
+<|im_start|>user
+摘要列表：
+{summaries}
+<|im_end|>
+<|im_start|>assistant
+'''
+    """
+    摘要评分反思提示词模板
+
+    占位符:
+    - {summaries}: 摘要列表 JSON
+    """
+
+    reflection_insights_prompt: str = '''<|im_start|>system
+你是一个记忆分析助手。请根据以下新数据和已有用户画像，更新用户特点描述：
+
+1. 参考已有用户画像
+2. 根据新数据更新用户特点
+3. 如果没有新变化，可以保留原有内容
+
+请返回 JSON 格式：
+{
+  "user_profile": "更新后的用户特点描述"
+}
+<|im_end|>
+<|im_start|>user
+已有用户画像：
+{existing_profile}
+
+---
+新数据摘要：
+{summaries}
+
+---
+新数据三元组：
+{triples}
+<|im_end|>
+<|im_start|>assistant
+'''
+    """
+    用户洞察反思提示词模板
+
+    占位符:
+    - {existing_profile}: 已有用户画像
+    - {summaries}: 摘要列表
+    - {triples}: 三元组列表
+    """
+
 
 # 全局默认配置
 config = Config()

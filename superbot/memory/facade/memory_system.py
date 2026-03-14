@@ -8,7 +8,6 @@ import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
-import numpy as np
 from loguru import logger
 
 # Add src to path
@@ -17,7 +16,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 # Import using superbot.memory paths (memmory is an internal name)
-from superbot.memory.config import Config, config
+from superbot.memory.config import Config
 from superbot.memory.storage import VectorStore, EnhancedRelationStore
 from superbot.memory.pipeline.ingestion.cache_buffer import CacheBuffer, FIFOBuffer
 from superbot.memory.pipeline.retrieval import EnhancedRetriever
@@ -138,18 +137,65 @@ class MemorySystem:
             # 3. Get buffer content and process
             await self._process_buffer(similarity_threshold)
 
-    async def _process_buffer(self, similarity_threshold: float) -> None:
+    async def process_now(self, similarity_threshold: float = 0.8) -> Dict[str, Any]:
+        """
+        Manually trigger processing of the buffer content.
+
+        This method allows external code to explicitly trigger the processing
+        of content in the process_buffer, extracting summary and triples.
+
+        Args:
+            similarity_threshold: Similarity threshold for deduplication, default 0.8
+
+        Returns:
+            Dictionary containing processing result with keys:
+            - success: bool, whether processing was successful
+            - items_processed: int, number of items processed
+            - summary: str, the extracted summary
+            - triples_count: int, number of triples extracted
+        """
+        logger.info("[Memory] process_now() called, buffer size: {}", self.process_buffer.size())
+
+        items_processed, triples_count = await self._process_buffer(similarity_threshold)
+
+        return {
+            "success": True,
+            "items_processed": items_processed,
+            "summary": self._latest_summary or "",
+            "triples_count": triples_count
+        }
+
+    async def _process_buffer(self, similarity_threshold: float) -> tuple[int, int]:
         """
         Process content in process_buffer, extract summary and triples (async version).
 
         Args:
             similarity_threshold: Similarity threshold
+
+        Returns:
+            Tuple of (items_processed, triples_count)
         """
         batch_items = self.process_buffer.get_batch()
         if not batch_items:
-            return
+            return 0, 0
 
         logger.info("[Memory] _process_buffer() processing {} items", len(batch_items))
+
+        # Step 1: Save raw messages to SQLite raw_logs (run in thread to avoid blocking)
+        import asyncio
+
+        def save_raw_logs():
+            ids = []
+            for item in batch_items:
+                raw_id = self.relation_store.add_raw_log(
+                    content=item.get("text", ""),
+                    source=item.get("source", "USER")
+                )
+                ids.append(raw_id)
+            return ids
+
+        raw_ids = await asyncio.to_thread(save_raw_logs)
+        logger.info("[Memory] _process_buffer() saved {} raw logs", len(raw_ids))
 
         # Get LLM
         llm = self._get_llm()
@@ -173,7 +219,38 @@ class MemorySystem:
         self._latest_summary = summary
         logger.info("[Memory] _process_buffer() summary: {}", summary[:100] if summary else None)
 
+        # Step 2: Save summary to SQLite memory_nodes
+        if raw_ids:
+            self.relation_store.add_memory_node(
+                tag="conversation",
+                summary=summary or "",
+                vector_id=summary_id,  # ChromaDB vector id
+                raw_ids=raw_ids  # All raw_ids for tracing
+            )
+            logger.info("[Memory] _process_buffer() saved memory node, raw_ids count: {}", len(raw_ids))
+
+        # Step 3: Persist summary to ChromaDB
+        if self._embedding and summary:
+            try:
+                summary_vector = self._embedding.encode(summary).tolist()
+                self.vector_store.add(
+                    ids=[summary_id],
+                    vectors=[summary_vector],
+                    documents=[summary],
+                    metadatas=[{
+                        "timestamp": datetime.now().isoformat(),
+                        "summary_id": summary_id,
+                        "raw_ids": json.dumps(raw_ids),  # Store raw_ids for tracing
+                        "reflected": False  # Not yet reflected
+                    }],
+                    collection="query_summary"
+                )
+                logger.info("[Memory] _process_buffer() persisted summary to query_summary: {}", summary_id[:8])
+            except Exception as e:
+                logger.warning("[Memory] _process_buffer() failed to persist summary: {}", e)
+
         # Deduplicate each triple
+        triples_count = 0
         if self._embedding and triples:
             embedding = self._embedding
 
@@ -189,7 +266,7 @@ class MemorySystem:
                 # Build natural language description for vector search
                 action_text = f"{subject}{relation}{obj}"
 
-                # Store original JSON in metadata
+                # Store original JSON in metadata, include summary_id for tracing
                 triple_json = json.dumps({
                     "s": subject,
                     "r": relation,
@@ -217,10 +294,15 @@ class MemorySystem:
                         ids=[new_id],
                         vectors=[action_vector],
                         documents=[action_text],
-                        metadatas=[{"triple": triple_json}],
+                        metadatas=[{
+                            "triple": triple_json,
+                            "summary_id": summary_id,  # Link to summary
+                            "reflected": False  # Not yet reflected
+                        }],
                         collection="user_actions"
                     )
                     existing_id = new_id
+                    triples_count += 1
                     logger.info("[Memory] _process_buffer() added new action: {}", new_id[:8])
 
                 # Write to sqlite table action_objects (associate vector_id and summary_id)
@@ -231,8 +313,10 @@ class MemorySystem:
                     )
 
         self.process_buffer.clear()
-        logger.info("[Memory] _process_buffer() completed, latest_summary: {}",
-                    self._latest_summary[:100] if self._latest_summary else None)
+        logger.info("[Memory] _process_buffer() completed, items: {}, triples: {}",
+                    len(batch_items), triples_count)
+
+        return len(batch_items), triples_count
 
     async def _extract_summary_and_triples(self, text: str, llm) -> tuple:
         """Extract summary and triples simultaneously (async version).
@@ -325,7 +409,7 @@ class MemorySystem:
             # 0. Save query_text to process_buffer (source fixed to USER)
             self.history.push(query_text, source="USER")
             self.process_buffer.push(query_text, source="USER")
-    
+
             if not self._embedding:
                 logger.warning("[Memory] recall() no embedding provider")
                 return {"triples": [], "query": query_text}
@@ -339,7 +423,7 @@ class MemorySystem:
             import numpy as np
 
             similarity = np.dot(summary_vector, query_vector) / (np.linalg.norm(summary_vector) * np.linalg.norm(query_vector) + 1e-8)
-    
+
             # 3. If similarity < 0.8, query query_summary collection for closest summary
             used_summary = summary
             if similarity < 0.8:
@@ -373,7 +457,7 @@ class MemorySystem:
                 collection="user_actions"
             )
 
-    
+
             # 6. Filter results with similarity > threshold, query action_objects to form complete triples
             triples = []
 
@@ -486,6 +570,536 @@ class MemorySystem:
         result = "\n".join(lines) if lines else ""
         return result
 
+
+    # ==================== Reflection System ====================
+
+    def _check_quota_sufficient(self, agent: Any = None) -> bool:
+        """Check if quota is sufficient to run reflection.
+
+        Delegates to idle_task.check_quota_sufficient().
+
+        Args:
+            agent: Optional AgentLoop instance for quota check
+
+        Returns:
+            True if quota is sufficient, False otherwise
+        """
+        from superbot.agent.idle_task import check_quota_sufficient as check_quota
+        return check_quota(agent)
+
+    async def _do_reflection(self) -> Dict[str, Any]:
+        """Execute reflection process.
+
+        Returns:
+            Reflection results
+        """
+        logger.info("[Memory] _do_reflection() starting")
+        results = {}
+
+        try:
+            # Part 1: Validate and clean triples + summaries
+            validate_result = await self._reflect_validate_triples()
+            results["validate"] = validate_result
+            logger.info("[Memory] _do_reflection() validate: processed={}, removed={}, retained={}, rounds={}",
+                        validate_result.get("total_processed", 0),
+                        validate_result.get("total_removed", 0),
+                        validate_result.get("total_retained", 0),
+                        validate_result.get("rounds", 0))
+
+            # Part 2: Generate user insights from validated data (last 3 months)
+            insights_result = await self._reflect_user_insights()
+            results["insights"] = insights_result
+            logger.info("[Memory] _do_reflection() insights generated")
+
+        except Exception as e:
+            logger.error("[Memory] _do_reflection() error: {}", e)
+
+        logger.info("[Memory] _do_reflection() completed")
+        return results
+
+    async def _reflect_validate_triples(self) -> Dict[str, Any]:
+        """Validate triples with summary as context.
+
+        Process:
+        1. Get unreflected triples
+        2. Get summaries as context
+        3. LLM scores triples
+        4. Delete low-score triples, mark reflected
+        5. Loop until no more unreflected triples
+
+        Returns:
+            Validation results
+        """
+        llm = self._get_llm()
+        if llm is None:
+            logger.warning("[Memory] _reflect_validate_triples() no LLM provider")
+            return {"processed": 0, "removed": 0, "retained": 0, "valid_triples": []}
+
+        results = {"processed": 0, "removed": 0, "retained": 0, "valid_triples": [], "rounds": 0}
+
+        while True:
+            # Get unreflected triples
+            triples = self._get_recent_triples(reflected=False)
+            if not triples:
+                break
+
+            # Collect summary_ids from this batch
+            batch_summary_ids = set()
+            for t in triples:
+                sid = t.get("metadata", {}).get("summary_id")
+                if sid:
+                    batch_summary_ids.add(sid)
+
+            # Get associated summaries as context
+            summaries_text = ""
+            if batch_summary_ids:
+                collection = self.vector_store.get_collection("query_summary")
+                try:
+                    data = collection.get(ids=list(batch_summary_ids))
+                    for doc in data.get("documents", []):
+                        if doc and len(summaries_text) + len(doc) < 4000:  # ~1K chars for context
+                            summaries_text += f"- {doc}\n"
+                except Exception as e:
+                    logger.warning("[Memory] _reflect_validate_triples() failed to get summaries: {}", e)
+
+            # Sort triples by time (oldest first)
+            triples.sort(key=lambda x: x.get("timestamp") or datetime.min, reverse=False)
+
+            # Build batch within 2K tokens
+            char_limit = 2000 * 4
+            batch = []
+            chars = 0
+
+            for t in triples:
+                item_str = json.dumps({"s": t.get("s", ""), "r": t.get("r", ""), "o": t.get("o", "")}, ensure_ascii=False)
+                if chars + len(item_str) > char_limit and batch:
+                    break
+                batch.append(t)
+                chars += len(item_str)
+
+            if not batch:
+                break
+
+            # Build prompt with triples + summary context
+            triples_json = json.dumps([{"id": t.get("id"), "s": t.get("s", ""), "r": t.get("r", ""), "o": t.get("o", "")} for t in batch], ensure_ascii=False)
+            prompt = f"""请对以下三元组评分（0-1分），只评分三元组：
+
+摘要上下文：
+{summaries_text}
+
+三元组：
+{triples_json}
+
+返回格式：[{{"id": "xxx", "score": 0.85}}, ...]"""
+
+            try:
+                response = await llm.agenerate([prompt])
+                scored = []
+                match = re.search(r'\[.*\]', response.generations[0][0].text, re.DOTALL)
+                if match:
+                    scored = json.loads(match.group(0))
+
+                # Separate valid and invalid
+                valid = [s for s in scored if s.get("score", 0) >= 0.5]
+                invalid = [s for s in scored if s.get("score", 0) < 0.5]
+
+                # Delete low-score
+                for item in invalid:
+                    self.vector_store.delete([item.get("id", "")], collection="user_actions")
+
+                # Mark valid as reflected
+                for item in valid:
+                    tid = item.get("id", "")
+                    collection = self.vector_store.get_collection("user_actions")
+                    data = collection.get(ids=[tid])
+                    if data and data.get("documents"):
+                        meta = data["metadatas"][0] if data.get("metadatas") else {}
+                        meta["reflected"] = True
+                        if self._embedding:
+                            vec = self._embedding.encode(data["documents"][0]).tolist()
+                            self.vector_store.add(ids=[tid], vectors=[vec], documents=[data["documents"][0]], metadatas=[meta], collection="user_actions")
+
+                # Collect valid triples for insights
+                for v in valid:
+                    for t in batch:
+                        if t.get("id") == v.get("id"):
+                            results["valid_triples"].append({"s": t.get("s", ""), "r": t.get("r", ""), "o": t.get("o", "")})
+                            break
+
+                results["processed"] += len(batch)
+                results["removed"] += len(invalid)
+                results["retained"] += len(valid)
+                results["rounds"] += 1
+
+                logger.info("[Memory] round {}: processed={}, removed={}, retained={}", results["rounds"], len(batch), len(invalid), len(valid))
+
+            except Exception as e:
+                logger.error("[Memory] _reflect_validate_triples() error: {}", e)
+                break
+
+        logger.info("[Memory] _reflect_validate_triples() done: processed={}, removed={}, retained={}", results["processed"], results["removed"], results["retained"])
+        return results
+
+    async def _reflect_user_insights(
+        self,
+        triples: List[Dict[str, Any]] = None,
+        summaries: List[str] = None
+    ) -> Dict[str, Any]:
+        """Generate user insights from validated triples and their associated summaries.
+
+        Uses 2K tokens constraint for both triples and summaries.
+
+        Args:
+            triples: (ignored, kept for compatibility)
+            summaries: (ignored, kept for compatibility)
+
+        Returns:
+            Insights results
+        """
+        # Get all reflected=True triples (no limit, 2K tokens constraint later)
+        all_triples = self._get_recent_triples(reflected=True)
+
+        if not all_triples:
+            logger.info("[Memory] _reflect_user_insights() no triples to analyze")
+            return {"user_profile": ""}
+
+        # Collect associated summary_ids from triples
+        summary_ids = set()
+        for t in all_triples:
+            sid = t.get("metadata", {}).get("summary_id")
+            if sid:
+                summary_ids.add(sid)
+
+        # Get summaries by summary_ids
+        summaries = []
+        if summary_ids:
+            collection = self.vector_store.get_collection("query_summary")
+            try:
+                data = collection.get(ids=list(summary_ids))
+                for i, doc in enumerate(data.get("documents", [])):
+                    if doc:
+                        summaries.append({
+                            "id": data["ids"][i],
+                            "summary": doc,
+                            "metadata": data.get("metadatas", [{}])[i] if i < len(data.get("metadatas", [])) else {}
+                        })
+            except Exception as e:
+                logger.warning("[Memory] _reflect_user_insights() failed to get summaries: {}", e)
+
+        if not summaries:
+            logger.info("[Memory] _reflect_user_insights() no associated summaries found")
+            return {"user_profile": ""}
+
+        # Get LLM for insights
+        llm = self._get_llm()
+        if llm is None:
+            logger.warning("[Memory] _reflect_user_insights() no LLM provider")
+            return {"user_profile": ""}
+
+        # Read existing USER.md for context
+        existing_profile = self._read_user_profile()
+
+        # Format data with token limit (~2K)
+        max_tokens = 2000
+        char_limit = max_tokens * 4  # Estimate: 1 token ≈ 4 chars
+
+        # Build summaries text within limit
+        summaries_text = ""
+        for s in summaries:
+            item = f"- {s}\n"
+            if len(summaries_text) + len(item) > char_limit // 2:  # Half for summaries
+                break
+            summaries_text += item
+
+        # Build triples JSON within limit
+        triples_text = ""
+        for t in triples:
+            item = json.dumps(t, ensure_ascii=False)
+            if len(triples_text) + len(item) > char_limit // 2:  # Half for triples
+                break
+            triples_text += item + "\n"
+
+        prompt = self.config.reflection_insights_prompt.format(
+            summaries=summaries_text,
+            triples=triples_text,
+            existing_profile=existing_profile
+        )
+
+        try:
+            response = await llm.agenerate([prompt])
+            response_text = response.generations[0][0].text.strip()
+
+            # Parse JSON response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    insights = json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    insights = {"user_profile": ""}
+            else:
+                insights = {"user_profile": ""}
+
+            # Generate user profile prompt
+            user_profile_prompt = self._generate_user_profile_prompt(insights)
+
+            # Save to USER.md
+            self._save_user_profile(user_profile_prompt)
+
+            # Save reflection results
+            self._save_reflection({
+                **insights,
+                "user_profile_prompt": user_profile_prompt,
+                "timestamp": datetime.now().isoformat()
+            })
+
+            return {
+                "user_profile": insights.get("user_profile", ""),
+                "user_profile_prompt": user_profile_prompt
+            }
+
+        except Exception as e:
+            logger.error("[Memory] _reflect_user_insights() error: {}", e)
+            return {"user_profile": ""}
+
+    def _get_recent_triples(
+        self,
+        reflected: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        """Get triples from vector store.
+
+        Args:
+            reflected: If True, only return reflected triples.
+                       If False, only return non-reflected triples.
+                       If None, return all triples.
+
+        Returns:
+            List of triples with metadata
+        """
+        try:
+            collection = self.vector_store.get_collection("user_actions")
+            all_items = collection.get()
+
+            if not all_items.get("ids"):
+                return []
+
+            triples = []
+
+            for i, item_id in enumerate(all_items["ids"]):
+                metadata = all_items.get("metadatas", [{}])[i] if i < len(all_items.get("metadatas", [])) else {}
+
+                # Filter by reflected status
+                if reflected is not None:
+                    is_reflected = metadata.get("reflected", False)
+                    if isinstance(is_reflected, str):
+                        is_reflected = is_reflected.lower() == "true"
+                    if is_reflected != reflected:
+                        continue
+
+                # Parse triple from metadata
+                triple_json = metadata.get("triple", "")
+                if not triple_json:
+                    continue
+
+                try:
+                    triple_data = json.loads(triple_json)
+                except json.JSONDecodeError:
+                    continue
+
+                # Parse timestamp
+                timestamp_str = metadata.get("timestamp", "")
+                item_time = None
+                if timestamp_str:
+                    try:
+                        item_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                        if item_time < cutoff_date:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                triples.append({
+                    "id": item_id,
+                    "type": "triple",
+                    "timestamp": item_time,
+                    **triple_data
+                })
+
+                if len(triples) >= limit:
+                    break
+
+            # Sort by timestamp (newest first)
+            triples.sort(key=lambda x: x.get("timestamp") or datetime.min, reverse=True)
+            return triples
+
+        except Exception as e:
+            logger.error("[Memory] _get_recent_triples() error: {}", e)
+            return []
+
+    def _get_recent_summaries(
+        self,
+        limit: int = 10,
+        reflected: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        """Get recent summaries from vector store.
+
+        Args:
+            limit: Maximum number of summaries to return
+            reflected: If True, only return reflected summaries.
+                      If False, only return non-reflected summaries.
+                      If None, return all summaries.
+
+        Returns:
+            List of summaries with metadata
+        """
+        try:
+            collection = self.vector_store.get_collection("query_summary")
+            all_items = collection.get()
+
+            if not all_items.get("ids"):
+                return []
+
+            results = []
+            for i, item_id in enumerate(all_items["ids"]):
+                document = all_items.get("documents", [""])[i] if i < len(all_items.get("documents", [])) else ""
+                if not document:
+                    continue
+
+                metadata = all_items.get("metadatas", [{}])[i] if i < len(all_items.get("metadatas", [])) else {}
+
+                # Filter by reflected status
+                if reflected is not None:
+                    is_reflected = metadata.get("reflected", False)
+                    if isinstance(is_reflected, str):
+                        is_reflected = is_reflected.lower() == "true"
+                    if is_reflected != reflected:
+                        continue
+
+                # Parse timestamp
+                timestamp_str = metadata.get("timestamp", "")
+                item_time = None
+                if timestamp_str:
+                    try:
+                        item_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        pass
+
+                results.append({
+                    "id": item_id,
+                    "type": "summary",
+                    "timestamp": item_time,
+                    "summary": document,
+                    "metadata": metadata
+                })
+
+                if len(results) >= limit:
+                    break
+
+            # Sort by timestamp (newest first)
+            results.sort(key=lambda x: x.get("timestamp") or datetime.min, reverse=True)
+            return results
+
+        except Exception as e:
+            logger.error("[Memory] _get_recent_summaries() error: {}", e)
+            return []
+
+    def _generate_user_profile_prompt(self, insights: Dict[str, Any]) -> str:
+        """Generate user profile prompt from insights.
+
+        Args:
+            insights: User insights dictionary
+
+        Returns:
+            Formatted user profile prompt
+        """
+        user_profile = insights.get("user_profile", "")
+
+        prompt = f"""# 用户特点
+- {user_profile}
+"""
+        return prompt
+
+    def _save_reflection(self, reflection_data: Dict[str, Any]) -> None:
+        """Save reflection data to vector store.
+
+        Args:
+            reflection_data: Reflection data to save
+        """
+        try:
+            reflection_json = json.dumps(reflection_data, ensure_ascii=False)
+            reflection_id = str(uuid.uuid4())
+
+            if self._embedding:
+                reflection_vector = self._embedding.encode(reflection_json).tolist()
+                self.vector_store.add(
+                    ids=[reflection_id],
+                    vectors=[reflection_vector],
+                    documents=[reflection_json],
+                    metadatas=[{
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "reflection"
+                    }],
+                    collection="query_summary"
+                )
+                logger.info("[Memory] _save_reflection() saved: {}", reflection_id[:8])
+        except Exception as e:
+            logger.warning("[Memory] _save_reflection() error: {}", e)
+
+    def _read_user_profile(self) -> str:
+        """Read existing user profile from USER.md file.
+
+        Returns:
+            Existing user profile content, or empty string if not found
+        """
+        try:
+            user_md_path = os.path.join(self.data_dir, "USER.md")
+            if os.path.exists(user_md_path):
+                with open(user_md_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # Extract just the user profile section (before the first ---)
+                if "---" in content:
+                    return content.split("---")[0].strip()
+                return content.strip()
+            return ""
+        except Exception as e:
+            logger.warning("[Memory] _read_user_profile() error: {}", e)
+            return ""
+
+    def _save_user_profile(self, user_profile_prompt: str) -> None:
+        """Save user profile to USER.md file.
+
+        Args:
+            user_profile_prompt: User profile content to save
+        """
+        try:
+            # Get workspace path (use data_dir as default)
+            user_md_path = os.path.join(self.data_dir, "USER.md")
+
+            # Read existing content if file exists
+            existing_content = ""
+            if os.path.exists(user_md_path):
+                with open(user_md_path, "r", encoding="utf-8") as f:
+                    existing_content = f.read()
+
+            # Generate new content
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_content = f"""# User Profile
+
+Generated at: {timestamp}
+
+{user_profile_prompt}
+
+---
+
+Previous profile (for reference):
+{existing_content[existing_content.find('---')+3:] if '---' in existing_content else '(none)'}
+"""
+
+            # Write to file
+            with open(user_md_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+            logger.info("[Memory] _save_user_profile() saved to {}", user_md_path)
+        except Exception as e:
+            logger.warning("[Memory] _save_user_profile() error: {}", e)
 
     def shutdown(self):
         """Shutdown the system."""
