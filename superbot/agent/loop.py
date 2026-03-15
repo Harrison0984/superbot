@@ -153,6 +153,17 @@ class AgentLoop:
         # Register cleanup (default threshold)
         self.register_idle_task(CleanupIdleTask())
 
+        # Register reflection task if memory system is available
+        if self.memory_system is not None:
+            from superbot.memory.facade.reflection_task import ReflectionIdleTask
+            # Get internal MemorySystem from MemoryAdapter if needed
+            memory_sys = self.memory_system
+            if hasattr(self.memory_system, '_memory_system'):
+                memory_sys = self.memory_system._memory_system
+            if memory_sys is not None:
+                self.register_idle_task(ReflectionIdleTask(memory_sys))
+                logger.info("Registered reflection idle task")
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         allowed_dir = self.workspace if self.restrict_to_workspace else None
@@ -699,6 +710,8 @@ class AgentLoop:
             logger.exception("Error executing idle task: {}", task_type)
         finally:
             self._running_idle_tasks.pop(task_type, None)
+            # Update last task end time to prevent repeated execution
+            self._last_task_end_time = time.time()
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""

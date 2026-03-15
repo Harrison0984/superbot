@@ -115,8 +115,9 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         """Get channel-specific instructions."""
         if channel == "email":
             return """You are handling an incoming EMAIL.
-- Summarize the email content concisely
-- Do NOT reply to the email directly - just summarize the key points
+- Do NOT reply to the email directly
+- Show email subject as-is (do not summarize)
+- Summarize the email body content in detail
 - If the email requires action, highlight the action items
 - Use the 'message' tool to send the summary to the user via another channel (e.g., Feishu, Telegram)"""
         return """You are in a conversational chat. Reply naturally to the user."""

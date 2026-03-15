@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from superbot.agent.idle_task import IdleTask
+from superbot.agent.idle_task import DEFAULT_IDLE_THRESHOLD, IdleTask
 
 if TYPE_CHECKING:
     from superbot.agent.loop import AgentLoop
@@ -14,8 +14,7 @@ if TYPE_CHECKING:
 class CleanupIdleTask(IdleTask):
     """Cleanup task executed during idle time."""
 
-    def __init__(self, min_idle_seconds: int = 14400):  # 4 hours
-        self.min_idle_seconds = min_idle_seconds
+    CLEANUP_IDLE_THRESHOLD = 14400  # 4 hours
 
     @property
     def name(self) -> str:
@@ -27,10 +26,10 @@ class CleanupIdleTask(IdleTask):
 
     @property
     def idle_threshold_seconds(self) -> int:
-        return self.min_idle_seconds
+        return self.CLEANUP_IDLE_THRESHOLD
 
     async def should_run(self, agent: "AgentLoop", idle_seconds: float) -> bool:
-        return idle_seconds >= self.min_idle_seconds
+        return idle_seconds >= self.CLEANUP_IDLE_THRESHOLD
 
     async def execute(self, agent: "AgentLoop") -> None:
         # Clean up temp files

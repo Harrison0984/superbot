@@ -29,7 +29,7 @@ class TelegramConfig(Base):
     enabled: bool = False
     token: str = ""  # Bot token from @BotFather
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
-    proxy: str | None = None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
+    use_proxy: bool = False  # Use global proxy settings
     reply_to_message: bool = False  # If true, bot replies quote the original message
 
 
@@ -72,8 +72,6 @@ class EmailConfig(Base):
     # Behavior
     poll_interval_seconds: int = 30
     mark_seen: bool = True
-    max_body_chars: int = 12000
-    subject_prefix: str = "Re: "
     allow_from: list[str] = Field(default_factory=list)  # Allowed sender email addresses
 
 

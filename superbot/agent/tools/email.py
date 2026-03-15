@@ -14,7 +14,7 @@ import smtplib
 import socket
 import ssl
 import time
-from datetime import date
+from datetime import date, datetime
 from email import policy
 from email.header import decode_header, make_header
 from email.message import EmailMessage
@@ -78,24 +78,41 @@ class EmailTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Send an email to a recipient. Use this to send emails via SMTP."
+        return "Send emails via SMTP, or search emails via IMAP by subject/date. Use action='send' (default) to send, action='search' with subject and/or since_date/before_date to search. Search results include full email content with original subject (do not summarize the subject)."
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["send", "search"],
+                    "description": "Action to perform: send (default), search (search by subject or date range)"
+                },
                 "to": {
                     "type": "string",
-                    "description": "Recipient email address"
+                    "description": "Recipient email address (for send action)"
                 },
                 "subject": {
                     "type": "string",
-                    "description": "Email subject line"
+                    "description": "Email subject line, or search keyword (for search action)"
                 },
                 "content": {
                     "type": "string",
-                    "description": "Email body content"
+                    "description": "Email body content (for send action)"
+                },
+                "since_date": {
+                    "type": "string",
+                    "description": "Search emails since this date (format: YYYY-MM-DD). Used with search action."
+                },
+                "before_date": {
+                    "type": "string",
+                    "description": "Search emails before this date (format: YYYY-MM-DD). Used with search action for date range."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of emails to return (default: 10)"
                 },
                 "in_reply_to": {
                     "type": "string",
@@ -107,7 +124,7 @@ class EmailTool(Tool):
                     "description": "Optional: list of file paths to attach to the email"
                 }
             },
-            "required": ["to", "content"]
+            "required": []
         }
 
     async def execute(
@@ -118,16 +135,24 @@ class EmailTool(Tool):
         content: str,
         **kwargs: Any,
     ) -> str:
-        """Send an email via SMTP."""
+        """Send or search emails via SMTP/IMAP."""
+        action = kwargs.get("action", "send")
         to = kwargs.get("to", "")
-        subject = kwargs.get("subject", "superbot reply")
+        subject = kwargs.get("subject", "superbot reply" if action == "send" else "")
+        since_date = kwargs.get("since_date", "")
+        before_date = kwargs.get("before_date", "")
+        limit = kwargs.get("limit", 10)
         in_reply_to = kwargs.get("in_reply_to")
         attachments = kwargs.get("attachments")
 
         if not self.config:
             return tool_error("not_configured", "Email tool not configured")
 
-        # Validate config
+        # Handle search action
+        if action == "search":
+            return await self._handle_fetch_search(subject, since_date, before_date, limit)
+
+        # Send action (default)
         if not self.config.smtp_host:
             return tool_error("not_configured", "SMTP host not configured")
         if not self.config.smtp_username:
@@ -239,11 +264,8 @@ class EmailTool(Tool):
             smtp.send_message(msg)
 
     def _reply_subject(self, base_subject: str) -> str:
-        subject = (base_subject or "").strip() or "superbot reply"
-        prefix = self.config.subject_prefix or "Re: "
-        if subject.lower().startswith("re:"):
-            return subject
-        return f"{prefix}{subject}"
+        # Keep original subject without prefix
+        return (base_subject or "").strip() or "superbot reply"
 
     def _add_attachment(self, msg: EmailMessage, file_path: str) -> None:
         """Add an attachment to the email message."""
@@ -450,6 +472,85 @@ class EmailTool(Tool):
             return False
         return True
 
+    async def _handle_fetch_search(
+        self,
+        subject: str,
+        since_date: str,
+        before_date: str,
+        limit: int,
+    ) -> str:
+        """Handle search action."""
+        # Validate IMAP config
+        if not self.config.imap_host:
+            return tool_error("not_configured", "IMAP not configured")
+
+        try:
+            # Build search criteria
+            criteria_parts = []
+
+            if subject:
+                # Search in subject
+                criteria_parts.append(f'SUBJECT "{subject}"')
+
+            if since_date:
+                # Convert YYYY-MM-DD to IMAP format (dd-Mon-YYYY)
+                imap_date = self._convert_to_imap_date(since_date)
+                if imap_date:
+                    criteria_parts.append(f'SINCE {imap_date}')
+
+            if before_date:
+                # Convert YYYY-MM-DD to IMAP format (dd-Mon-YYYY)
+                imap_date = self._convert_to_imap_date(before_date)
+                if imap_date:
+                    criteria_parts.append(f'BEFORE {imap_date}')
+
+            if not criteria_parts:
+                return tool_error("invalid_params", "Search requires subject, since_date, or before_date")
+
+            search_criteria = tuple(criteria_parts)
+
+            # Debug log the search criteria
+            logger.info("IMAP search criteria: {}", search_criteria)
+
+            # Fetch messages
+            messages = await asyncio.to_thread(
+                self._fetch_messages,
+                search_criteria=search_criteria,
+                mark_seen=False,
+                dedupe=False,
+                limit=limit,
+            )
+
+            if not messages:
+                return "No emails found"
+
+            # Format results
+            results = []
+            for i, msg in enumerate(messages):
+                # Use content if available, otherwise fall back to text_preview
+                body = msg.get('content', '') or msg.get('text_preview', '')
+                if body:
+                    # Extract body from content format (skip header lines)
+                    lines = body.split('\n')
+                    body_start = 0
+                    for j, line in enumerate(lines):
+                        if line.strip() == '' and j > 2:
+                            body_start = j + 1
+                            break
+                    body = '\n'.join(lines[body_start:]).strip()
+                results.append(
+                    f"{i + 1}. From: {msg.get('from', 'N/A')}\n"
+                    f"   Subject: {msg.get('subject', 'N/A')}\n"
+                    f"   Date: {msg.get('date', 'N/A')}\n"
+                    f"   Content: {body}" if body else ""
+                )
+
+            return f"Found {len(messages)} email(s):\n\n" + "\n\n".join(results)
+
+        except Exception as e:
+            logger.error("Email search error: {}", e)
+            return tool_error("fetch_error", f"Failed to fetch emails: {str(e)}")
+
     def _fetch_new_messages(self) -> list[dict[str, Any]]:
         """Poll IMAP and return parsed unread messages."""
         return self._fetch_messages(
@@ -511,13 +612,37 @@ class EmailTool(Tool):
             if status != "OK":
                 return messages
 
+            # Use SEARCH and sort manually by date
             status, data = client.search(None, *search_criteria)
             if status != "OK" or not data:
                 return messages
 
             ids = data[0].split()
+            # Get messages with dates for sorting
+            messages_with_dates = []
+            for imap_id in ids:
+                status, fetched = client.fetch(imap_id, "(INTERNALDATE)")
+                if status != "OK" or not fetched:
+                    continue
+                # Extract internal date
+                match = re.search(r'INTERNALDATE "([^"]+)"', str(fetched))
+                if match:
+                    date_str = match.group(1)
+                    try:
+                        from email.utils import parsedate_to_datetime
+                        date = parsedate_to_datetime(date_str)
+                        messages_with_dates.append((date, imap_id))
+                    except:
+                        messages_with_dates.append((datetime.min, imap_id))
+
+            # Sort by date descending (newest first)
+            messages_with_dates.sort(key=lambda x: x[0], reverse=True)
+
+            # Extract sorted ids
+            ids = [mid for _, mid in messages_with_dates]
+
             if limit > 0 and len(ids) > limit:
-                ids = ids[-limit:]
+                ids = ids[:limit]
 
             for imap_id in ids:
                 status, fetched = client.fetch(imap_id, "(BODY.PEEK[] UID)")
@@ -545,8 +670,6 @@ class EmailTool(Tool):
 
                 if not body:
                     body = "(empty email body)"
-
-                body = body[: self.config.max_body_chars]
 
                 attachment_text = ""
                 if attachment_names:
@@ -599,6 +722,18 @@ class EmailTool(Tool):
     def _format_imap_date(value: date) -> str:
         month = EmailTool._IMAP_MONTHS[value.month - 1]
         return f"{value.day:02d}-{month}-{value.year}"
+
+    @staticmethod
+    def _convert_to_imap_date(date_str: str) -> str | None:
+        """Convert YYYY-MM-DD to IMAP date format (dd-Mon-YYYY)."""
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            month = EmailTool._IMAP_MONTHS[dt.month - 1]
+            return f"{dt.day:02d}-{month}-{dt.year}"
+        except Exception as e:
+            logger.warning("Failed to convert date {}: {}", date_str, e)
+            return None
 
     @staticmethod
     def _extract_message_bytes(fetched: list[Any]) -> bytes | None:

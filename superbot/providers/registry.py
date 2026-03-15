@@ -217,6 +217,43 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
+    # MiniMax: native API, bypasses LiteLLM
+    ProviderSpec(
+        name="minimax",
+        keywords=("minimax",),
+        env_key="MINIMAX_API_KEY",
+        display_name="MiniMax",
+        litellm_prefix="",                  # Uses native API, not LiteLLM
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="https://api.minimaxi.com/v1",
+        strip_model_prefix=False,
+        model_overrides=(),
+        supports_prompt_caching=True,
+    ),
+
+    # MLX: Apple Silicon local models
+    ProviderSpec(
+        name="mlx",
+        keywords=("mlx",),
+        env_key="",
+        display_name="MLX",
+        litellm_prefix="",                  # Local MLX models
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=True,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="",                # user must provide model path
+        strip_model_prefix=False,
+        model_overrides=(),
+    ),
+
     # === Auxiliary (not a primary LLM provider) ============================
 
 )

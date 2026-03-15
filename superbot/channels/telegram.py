@@ -13,7 +13,7 @@ from telegram.request import HTTPXRequest
 from superbot.bus.events import OutboundMessage
 from superbot.bus.queue import MessageBus
 from superbot.channels.base import BaseChannel
-from superbot.config.schema import TelegramConfig
+from superbot.config.schema import ProxyConfig, TelegramConfig
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -121,10 +121,12 @@ class TelegramChannel(BaseChannel):
         config: TelegramConfig,
         bus: MessageBus,
         groq_api_key: str = "",
+        proxy_config: "ProxyConfig | None" = None,
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self.groq_api_key = groq_api_key
+        self.proxy_config = proxy_config
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
@@ -142,8 +144,11 @@ class TelegramChannel(BaseChannel):
         # Build the application with larger connection pool to avoid pool-timeout on long runs
         req = HTTPXRequest(connection_pool_size=16, pool_timeout=5.0, connect_timeout=30.0, read_timeout=30.0)
         builder = Application.builder().token(self.config.token).request(req).get_updates_request(req)
-        if self.config.proxy:
-            builder = builder.proxy(self.config.proxy).get_updates_proxy(self.config.proxy)
+        # Use global proxy if enabled
+        if self.config.use_proxy and self.proxy_config and self.proxy_config.enabled:
+            proxy_url = self.proxy_config.https_proxy or self.proxy_config.http_proxy or self.proxy_config.socks_proxy
+            if proxy_url:
+                builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
         self._app = builder.build()
         self._app.add_error_handler(self._on_error)
 
