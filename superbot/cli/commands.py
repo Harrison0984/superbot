@@ -7,6 +7,7 @@ import signal
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 import typer
 from prompt_toolkit import PromptSession
