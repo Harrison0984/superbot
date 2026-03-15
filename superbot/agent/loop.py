@@ -21,6 +21,7 @@ from superbot.agent.tools.registry import ToolRegistry
 from superbot.agent.tools.shell import ExecTool
 from superbot.agent.tools.spawn import SpawnTool
 from superbot.agent.tools.web import WebFetchTool, WebSearchTool
+from superbot.agent.tools.bookmark import BookmarkTool
 from superbot.agent.tools.travel.flight import FlightTool
 from superbot.agent.tools.travel.hotel import HotelTool
 from superbot.agent.tools.feishu_doc import FeishuDocTool
@@ -32,7 +33,7 @@ from superbot.session.manager import SessionManager
 
 if TYPE_CHECKING:
     from superbot.agent.idle_task import IdleTask
-    from superbot.config.schema import ChannelsConfig, ExecToolConfig, ProxyConfig, WebToolsConfig
+    from superbot.config.schema import BookmarkConfig, ChannelsConfig, ExecToolConfig, ProxyConfig, WebToolsConfig
     from superbot.cron.service import CronService
 
 
@@ -62,6 +63,7 @@ class AgentLoop:
         reasoning_effort: str | None = None,
         brave_api_key: str | None = None,
         web_config: "WebToolsConfig | None" = None,
+        bookmark_config: "BookmarkConfig | None" = None,
         proxy_config: "ProxyConfig | None" = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -92,6 +94,7 @@ class AgentLoop:
         self.reasoning_effort = reasoning_effort
         self.brave_api_key = brave_api_key
         self.web_config = web_config
+        self.bookmark_config = bookmark_config
         self.proxy_config = proxy_config or ProxyConfig()
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -177,6 +180,9 @@ class AgentLoop:
         ))
         self.tools.register(WebSearchTool())
         self.tools.register(WebFetchTool())
+        self.tools.register(BookmarkTool(
+            bookmarks=self.bookmark_config.bookmarks if self.bookmark_config else {}
+        ))
         self.tools.register(FlightTool())
         self.tools.get("flight_search").set_bus(self.bus)
 

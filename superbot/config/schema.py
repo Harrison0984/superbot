@@ -191,11 +191,18 @@ class MCPServerConfig(Base):
     exclude_tools: list[str] = Field(default_factory=list)  # Tools to exclude from this server
 
 
+class BookmarkConfig(Base):
+    """Bookmark tool configuration."""
+
+    bookmarks: dict[str, str] = Field(default_factory=dict)  # site -> URL mapping
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    bookmark: BookmarkConfig = Field(default_factory=BookmarkConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
