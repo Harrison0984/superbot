@@ -263,8 +263,11 @@ class FlightTool(Tool):
                         logger.info("Page redirect detected, QR scan successful! Redirecting back to search page...")
                         # Go back to search page
                         search_url = f"https://flights.ctrip.com/online/listonline/list/oneway-{from_city}-{to_city}?depdate={date}"
-                        await page.goto(search_url)
-                        await page.wait_for_load_state("networkidle")
+                        await page.goto(search_url, wait_until="domcontentloaded")
+                        await page.wait_for_selector(
+                            '.flight-list, [class*="flight-list"], [class*="flight-item"]',
+                            timeout=15000
+                        )
 
                     # Save cookie and search
                     await self.session.save_cookies(page.context)

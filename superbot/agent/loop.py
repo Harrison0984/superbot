@@ -175,15 +175,8 @@ class AgentLoop:
             restrict_to_workspace=self.restrict_to_workspace,
             path_append=self.exec_config.path_append,
         ))
-        self.tools.register(WebSearchTool(
-            api_key=self.brave_api_key,
-            config=self.web_config,
-            proxy_config=self.proxy_config,
-        ))
-        self.tools.register(WebFetchTool(
-            config=self.web_config,
-            proxy_config=self.proxy_config,
-        ))
+        self.tools.register(WebSearchTool())
+        self.tools.register(WebFetchTool())
         self.tools.register(FlightTool())
         self.tools.get("flight_search").set_bus(self.bus)
 

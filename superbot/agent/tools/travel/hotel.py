@@ -160,7 +160,8 @@ class HotelTool(Tool):
 
             # Check login (need to refresh page to check if QR code disappeared)
             try:
-                await page.reload()
+                await page.reload(wait_until="domcontentloaded")
+                await asyncio.sleep(2)  # Wait for page to stabilize
                 is_logged_in = await verify_login(page, "https://hotels.ctrip.com/hotels/list")
                 if is_logged_in:
                     # Login successful, continue searching
@@ -183,8 +184,10 @@ class HotelTool(Tool):
                 params += f"&keyword={keywords}"
             search_url = base_url + params
 
-            await page.goto("https://www.ctrip.com", wait_until="domcontentloaded")
-            await page.goto(search_url, wait_until="networkidle")
+            await page.goto(search_url, wait_until="domcontentloaded")
+            # Wait for hotel list to load
+            await page.wait_for_selector('.hotel-list, [class*="hotel-list"], .hotel-item', timeout=15000)
+            await asyncio.sleep(2)  # Wait for dynamic content
             hotels = await self._extract_hotels(page)
 
             if hotels:

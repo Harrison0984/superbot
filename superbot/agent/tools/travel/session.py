@@ -177,7 +177,7 @@ async def verify_login(page: Page, url: str) -> bool:
     try:
         # Navigate to specified page
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        await page.wait_for_load_state("networkidle")
+        await asyncio.sleep(2)  # Wait for dynamic content
 
         # Detect user name
         user_selectors = [

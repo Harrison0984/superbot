@@ -224,8 +224,14 @@ class CtripMonitor:
 
             await page.goto(search_url, wait_until="domcontentloaded")
 
-            # Wait for JavaScript to fully load
-            await asyncio.sleep(8)
+            # Wait for flight list to load
+            try:
+                await page.wait_for_selector(
+                    '.flight-list, [class*="flight-list"], [class*="flight-item"], .base_domesticflights',
+                    timeout=15000
+                )
+            except Exception as e:
+                logger.warning("Flight list not found, page may not have loaded properly: " + str(e))
 
             # Check for login popup
             has_login = await self._check_login_popup(page)

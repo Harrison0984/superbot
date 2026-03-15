@@ -1,37 +1,233 @@
-"""Web tools: web_search and web_fetch."""
+"""Web tools: web_search and web_fetch using Chrome MCP."""
 
-import html
 import json
 import os
 import re
-from typing import TYPE_CHECKING, Any
+import select
+import subprocess
+import threading
+import time
+from typing import Any, Optional
 from urllib.parse import urlparse
 
-import httpx
-from loguru import logger
-
 from superbot.agent.tools.base import Tool, tool_error
+from superbot.agent.tools.travel.logger import get_logger
 
-if TYPE_CHECKING:
-    from superbot.config.schema import ProxyConfig, WebToolsConfig
+logger = get_logger(__name__)
 
-# Shared constants
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
-MAX_REDIRECTS = 5  # Limit redirects to prevent DoS attacks
-
-
-def _strip_tags(text: str) -> str:
-    """Remove HTML tags and decode entities."""
-    text = re.sub(r'<script[\s\S]*?</script>', '', text, flags=re.I)
-    text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', '', text)
-    return html.unescape(text).strip()
+# Chrome DevTools MCP - configurable via environment
+CHROME_MCP_COMMAND = [
+    "npx", "-y", "chrome-devtools-mcp@latest",
+    "--browserUrl", os.environ.get("CHROME_DEBUG_URL", "http://localhost:9222")
+]
 
 
-def _normalize(text: str) -> str:
-    """Normalize whitespace."""
-    text = re.sub(r'[ \t]+', ' ', text)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
+class ChromeMCPClient:
+    """MCP client for Chrome DevTools MCP."""
+
+    def __init__(self, timeout: int = 60):
+        self.timeout = timeout
+        self._process: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+        self._initialized = False
+
+    def _get_clean_env(self) -> dict:
+        """Get environment."""
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        env.pop("CLAUDE_CODE", None)
+        return env
+
+    def _ensure_process(self) -> bool:
+        """Ensure the MCP subprocess is running."""
+        if self._process is None or self._process.poll() is not None:
+            self._process = subprocess.Popen(
+                CHROME_MCP_COMMAND,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=os.getcwd(),
+                text=True,
+                env=self._get_clean_env(),
+            )
+            if not self._initialize():
+                return False
+        return True
+
+    def _send_request(self, method: str, params: dict = None) -> dict:
+        """Send a JSON-RPC request and get response."""
+        if not self._ensure_process():
+            raise Exception(
+                "Failed to start Chrome MCP server. Make sure Chrome is running "
+                "with remote debugging on port 9222: "
+                "open Chrome with --remote-debugging-port=9222"
+            )
+
+        request = {
+            "jsonrpc": "2.0",
+            "id": id(self) % 10000,
+            "method": method,
+            "params": params or {}
+        }
+
+        request_str = json.dumps(request) + "\n"
+        self._process.stdin.write(request_str)
+        self._process.stdin.flush()
+
+        # Read response with timeout
+        start_time = time.time()
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > self.timeout:
+                raise Exception(f"MCP request timeout after {self.timeout}s")
+
+            ready = select.select([self._process.stdout], [], [], 1)[0]
+            if ready:
+                line = self._process.stdout.readline()
+                if line:
+                    response = json.loads(line)
+                    if "error" in response:
+                        raise Exception(f"MCP error: {response['error']}")
+                    return response.get("result", {})
+
+    def _initialize(self) -> bool:
+        """Initialize the MCP connection."""
+        try:
+            result = self._send_request("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "superbot", "version": "1.0"}
+            })
+            self._initialized = True
+
+            # Send initialized notification
+            self._process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+            self._process.stdin.flush()
+
+            return True
+        except Exception as e:
+            logger.error("MCP initialization failed: " + str(e))
+            return False
+
+    def call_tool(self, tool_name: str, arguments: dict) -> str:
+        """Call an MCP tool and return the result."""
+        with self._lock:
+            if not self._initialized:
+                self._ensure_process()
+
+            result = self._send_request("tools/call", {
+                "name": tool_name,
+                "arguments": arguments
+            })
+
+            # Parse the result
+            if result and "content" in result:
+                content = result["content"]
+                if isinstance(content, list) and len(content) > 0:
+                    return content[0].get("text", "")
+
+            return "No response from MCP tool"
+
+    def close(self):
+        """Close the MCP connection."""
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                self._process.kill()
+            self._process = None
+            self._initialized = False
+
+
+class ChromeMCPTool(Tool):
+    """Base class for Chrome MCP based tools.
+
+    Uses a class-level singleton MCP client for efficiency.
+    All tool instances share the same browser connection.
+    """
+
+    _mcp_client: Optional[ChromeMCPClient] = None
+
+    def __init__(self):
+        """Initialize with Chrome MCP client."""
+        self._cwd = os.getcwd()
+
+    @classmethod
+    async def _get_mcp_client(cls) -> ChromeMCPClient:
+        """Get or create MCP client (singleton).
+
+        Singleton pattern ensures all Chrome MCP tools share
+        the same browser connection for efficiency.
+        """
+        if cls._mcp_client is None:
+            cls._mcp_client = ChromeMCPClient(timeout=60)
+        return cls._mcp_client
+
+    @classmethod
+    async def _mcp_call(cls, tool_name: str, **kwargs) -> str:
+        """Call an MCP tool."""
+        client = await cls._get_mcp_client()
+        return client.call_tool(tool_name, kwargs)
+
+    @classmethod
+    async def _close(cls):
+        """Close MCP client."""
+        if cls._mcp_client:
+            cls._mcp_client.close()
+            cls._mcp_client = None
+
+    @staticmethod
+    def _parse_search_results(snapshot: str) -> list:
+        """Parse search results from snapshot.
+
+        Extracts URLs from Chrome DevTools accessibility tree snapshot.
+        """
+        results = []
+        lines = snapshot.split('\n')
+
+        for line in lines:
+            line = line.strip()
+
+            # Extract URLs from href/ url patterns
+            if 'url="' in line:
+                url_match = re.search(r'url="(https?://[^"]+)"', line)
+                if url_match:
+                    url = url_match.group(1)
+                    # Skip search engine internal URLs
+                    if any(x in url for x in ['google.com/search', 'bing.com/search', 'webhp', 'support.google']):
+                        continue
+                    # Skip if too many query params (probably internal)
+                    if url.count('&') > 3:
+                        continue
+                    if url.startswith('http'):
+                        results.append({
+                            "title": "",
+                            "url": url,
+                            "description": ""
+                        })
+
+        return results[:10]
+
+    @staticmethod
+    def _clean_snapshot(snapshot: str, mode: str) -> str:
+        """Clean up snapshot text for readability.
+
+        Args:
+            snapshot: Raw snapshot text from Chrome DevTools
+            mode: 'markdown' or 'text'
+
+        Returns:
+            Cleaned text content
+        """
+        # Remove excessive whitespace
+        text = re.sub(r'\n{3,}', '\n\n', snapshot)
+        text = re.sub(r' {2,}', ' ', text)
+
+        if mode == "text":
+            text = re.sub(r'<[^>]+>', '', text)
+
+        return text.strip()
 
 
 def _validate_url(url: str) -> tuple[bool, str]:
@@ -47,25 +243,13 @@ def _validate_url(url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-class ProxyResolver:
-    """Mixin to resolve proxy from config."""
+class WebSearchTool(ChromeMCPTool):
+    """Search the web using Google via Chrome MCP."""
 
-    config: "WebToolsConfig | None"
-    proxy_config: "ProxyConfig"
-
-    @property
-    def proxy(self) -> str | None:
-        """Resolve proxy from config."""
-        if self.config and self.config.use_proxy and self.proxy_config.enabled:
-            return self.proxy_config.socks_proxy or self.proxy_config.https_proxy or self.proxy_config.http_proxy
-        return None
-
-
-class WebSearchTool(Tool, ProxyResolver):
-    """Search the web using Brave Search API."""
+    SEARCH_URL = "https://www.google.com/search"
 
     name = "web_search"
-    description = "Search the web. Returns titles, URLs, and snippets."
+    description = "Search the web using Google. Returns titles, URLs, and snippets."
     parameters = {
         "type": "object",
         "properties": {
@@ -75,23 +259,9 @@ class WebSearchTool(Tool, ProxyResolver):
         "required": ["query"]
     }
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        max_results: int = 5,
-        config: "WebToolsConfig | None" = None,
-        proxy_config: "ProxyConfig | None" = None,
-    ):
-        from superbot.config.schema import ProxyConfig
-        self._init_api_key = api_key
+    def __init__(self, max_results: int = 5):
         self.max_results = max_results
-        self.config = config
-        self.proxy_config = proxy_config or ProxyConfig()
-
-    @property
-    def api_key(self) -> str:
-        """Resolve API key at call time so env/config changes are picked up."""
-        return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
+        super().__init__()
 
     async def execute(
         self,
@@ -102,49 +272,49 @@ class WebSearchTool(Tool, ProxyResolver):
         **kwargs: Any,
     ) -> str:
         query = kwargs.get("query", content)
-        count = kwargs.get("count")
-        if not self.api_key:
-            return (
-                "Error: Brave Search API key not configured. Set it in "
-                "~/.superbot/config.json under tools.web.search.apiKey "
-                "(or export BRAVE_API_KEY), then restart the gateway."
-            )
+        count = kwargs.get("count", self.max_results)
+        n = min(max(count, 1), 10)
 
         try:
-            n = min(max(count or self.max_results, 1), 10)
-            logger.debug("WebSearch: {}", "proxy enabled" if self.proxy else "direct connection")
-            async with httpx.AsyncClient(proxy=self.proxy) as client:
-                r = await client.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    params={"q": query, "count": n},
-                    headers={"Accept": "application/json", "X-Subscription-Token": self.api_key},
-                    timeout=10.0
-                )
-                r.raise_for_status()
+            # Build search URL
+            search_url = f"{self.SEARCH_URL}?q={query}&num={n}"
+            logger.info("Searching: " + query)
 
-            results = r.json().get("web", {}).get("results", [])[:n]
+            # Navigate to search page
+            await self._mcp_call("navigate_page", url=search_url)
+
+            # Wait for results using MCP
+            await self._mcp_call("wait_for", text=["搜索结果", "results"])
+
+            # Take snapshot
+            snapshot = await self._mcp_call("take_snapshot")
+
+            # Parse results from snapshot
+            results = self._parse_search_results(snapshot)
+
             if not results:
                 return f"No results for: {query}"
 
             lines = [f"Results for: {query}\n"]
-            for i, item in enumerate(results, 1):
+            for i, item in enumerate(results[:n], 1):
                 lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
                 if desc := item.get("description"):
                     lines.append(f"   {desc}")
             return "\n".join(lines)
-        except httpx.ProxyError as e:
-            logger.error("WebSearch proxy error: {}", e)
-            return f"Proxy error: {e}"
+
         except Exception as e:
-            logger.error("WebSearch error: {}", e)
-            return tool_error("search_error", str(e))
+            import traceback
+            logger.error("WebSearch error: " + str(e))
+            return tool_error("search_error", str(e), trace=traceback.format_exc())
+        finally:
+            await self._close()
 
 
-class WebFetchTool(Tool, ProxyResolver):
-    """Fetch and extract content from a URL using Readability."""
+class WebFetchTool(ChromeMCPTool):
+    """Fetch and extract content from a URL using Chrome MCP."""
 
     name = "web_fetch"
-    description = "Fetch URL and extract readable content (HTML → markdown/text)."
+    description = "Fetch URL and extract readable content using browser."
     parameters = {
         "type": "object",
         "properties": {
@@ -155,16 +325,9 @@ class WebFetchTool(Tool, ProxyResolver):
         "required": ["url"]
     }
 
-    def __init__(
-        self,
-        max_chars: int = 50000,
-        config: "WebToolsConfig | None" = None,
-        proxy_config: "ProxyConfig | None" = None,
-    ):
-        from superbot.config.schema import ProxyConfig
+    def __init__(self, max_chars: int = 50000):
         self.max_chars = max_chars
-        self.config = config
-        self.proxy_config = proxy_config or ProxyConfig()
+        super().__init__()
 
     async def execute(
         self,
@@ -174,62 +337,52 @@ class WebFetchTool(Tool, ProxyResolver):
         content: str,
         **kwargs: Any,
     ) -> str:
-        from readability import Document
-
         url = kwargs.get("url", content)
         extractMode = kwargs.get("extractMode", "markdown")
         maxChars = kwargs.get("maxChars")
         max_chars = maxChars or self.max_chars
+
+        # Validate URL
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
             return tool_error("invalid_url", f"URL validation failed: {error_msg}", url=url)
 
         try:
-            logger.debug("WebFetch: {}", "proxy enabled" if self.proxy else "direct connection")
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
-                timeout=30.0,
-                proxy=self.proxy,
-            ) as client:
-                r = await client.get(url, headers={"User-Agent": USER_AGENT})
-                r.raise_for_status()
+            logger.info("Fetching URL: " + url)
 
-            ctype = r.headers.get("content-type", "")
+            # Navigate to the URL
+            await self._mcp_call("navigate_page", url=url)
 
-            if "application/json" in ctype:
-                text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
-            elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
-                doc = Document(r.text)
-                content = self._to_markdown(doc.summary()) if extractMode == "markdown" else _strip_tags(doc.summary())
-                text = f"# {doc.title()}\n\n{content}" if doc.title() else content
-                extractor = "readability"
-            else:
-                text, extractor = r.text, "raw"
+            # Wait for page to load
+            await self._mcp_call("wait_for", text=["</body>", "Loading"])
+
+            # Take snapshot
+            snapshot = await self._mcp_call("take_snapshot")
+
+            # Clean up the snapshot text
+            text = self._clean_snapshot(snapshot, extractMode)
 
             truncated = len(text) > max_chars
-            if truncated: text = text[:max_chars]
+            if truncated:
+                text = text[:max_chars]
 
             return json.dumps({
-                "content": json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
-                              "extractor": extractor, "truncated": truncated, "length": len(text), "text": text}),
+                "content": json.dumps({
+                    "url": url,
+                    "extractor": "chrome_mcp",
+                    "truncated": truncated,
+                    "length": len(text),
+                    "text": text
+                }, ensure_ascii=False),
                 "media": []
             })
-        except httpx.ProxyError as e:
-            logger.error("WebFetch proxy error for {}: {}", url, e)
-            return tool_error("proxy_error", f"Proxy error: {e}", url=url)
-        except Exception as e:
-            logger.error("WebFetch error for {}: {}", url, e)
-            return tool_error("fetch_error", str(e), url=url)
 
-    def _to_markdown(self, html: str) -> str:
-        """Convert HTML to markdown."""
-        # Convert links, headings, lists before stripping tags
-        text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
-                      lambda m: f'[{_strip_tags(m[2])}]({m[1]})', html, flags=re.I)
-        text = re.sub(r'<h([1-6])[^>]*>([\s\S]*?)</h\1>',
-                      lambda m: f'\n{"#" * int(m[1])} {_strip_tags(m[2])}\n', text, flags=re.I)
-        text = re.sub(r'<li[^>]*>([\s\S]*?)</li>', lambda m: f'\n- {_strip_tags(m[1])}', text, flags=re.I)
-        text = re.sub(r'</(p|div|section|article)>', '\n\n', text, flags=re.I)
-        text = re.sub(r'<(br|hr)\s*/?>', '\n', text, flags=re.I)
-        return _normalize(_strip_tags(text))
+        except Exception as e:
+            import traceback
+            logger.error("WebFetch error for " + url + ": " + str(e))
+            return tool_error("fetch_error", str(e), url=url)
+        finally:
+            await self._close()
