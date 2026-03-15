@@ -314,6 +314,61 @@ def _make_provider(config: Config):
     )
 
 
+def _init_memory_system(
+    config: Config,
+    main_provider: Any,
+    memory_provider: Any | None = None,
+    workspace: Path | None = None,
+) -> tuple[Any, str]:
+    """Initialize vector-based memory system.
+
+    Returns:
+        (memory_system, console_msg): memory_system instance and console message
+    """
+    from superbot.agent.memory_providers import (
+        create_embedding_provider,
+        create_llm_adapter,
+    )
+    from superbot.agent.memory_adapter import create_memory_adapter
+
+    if not config.embedding.enabled:
+        return None, "[yellow]⚠[/yellow] Vector memory disabled (embedding.enabled=false)"
+
+    try:
+        embedding_provider = create_embedding_provider(config.embedding)
+
+        # Create memory adapter first to get memory_config
+        workspace = workspace or config.workspace_path
+        memory_adapter, memory_config = create_memory_adapter(
+            workspace=workspace,
+            embedding_provider=embedding_provider,
+            llm_provider=None,  # Will set after creating llm_adapter
+        )
+
+        # Use local model for memory if available, otherwise fall back to main provider
+        llm_provider_for_memory = memory_provider if memory_provider else main_provider
+        llm_adapter = create_llm_adapter(
+            llm_provider_for_memory,
+            config.agents.defaults.model,
+            config.embedding,
+            memory_config=memory_config,
+        )
+
+        # Set the llm_adapter on memory_adapter if it was created
+        if memory_adapter and llm_adapter:
+            # Set LLM on the internal memory system (not just the adapter)
+            if memory_adapter._memory_system:
+                memory_adapter._memory_system.set_llm(llm_adapter)
+
+        if memory_adapter:
+            return memory_adapter, "[green]✓[/green] Vector memory system enabled"
+        else:
+            return None, "[yellow]Warning: Failed to initialize vector memory system"
+
+    except Exception as e:
+        return None, f"[yellow]Warning: Vector memory not available: {e}"
+
+
 # ============================================================================
 # Gateway / Server
 # ============================================================================
@@ -342,55 +397,15 @@ def gateway(
     config = load_config()
     sync_workspace_templates(config.workspace_path)
 
-    # Vector memory is required
-    if not config.embedding.enabled:
-        console.print("[red]Error: embedding.enabled must be true in config[/red]")
-        return
-
     bus = MessageBus()
     main_provider, memory_provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
 
     # Initialize vector-based memory system
-    memory_system = None
-    try:
-        from superbot.agent.memory_providers import (
-            create_embedding_provider,
-            create_llm_adapter,
-        )
-        from superbot.agent.memory_adapter import create_memory_adapter
-
-        embedding_provider = create_embedding_provider(config.embedding)
-
-        # Create memory adapter first to get memory_config
-        memory_adapter, memory_config = create_memory_adapter(
-            workspace=config.workspace_path,
-            embedding_provider=embedding_provider,
-            llm_provider=None,  # Will set after creating llm_adapter
-        )
-
-        # Use local model for memory if available, otherwise fall back to main provider
-        llm_provider_for_memory = memory_provider if memory_provider else main_provider
-        llm_adapter = create_llm_adapter(
-            llm_provider_for_memory,
-            config.agents.defaults.model,
-            config.embedding,
-            memory_config=memory_config,
-        )
-
-        # Set the llm_adapter on memory_adapter if it was created
-        if memory_adapter and llm_adapter:
-            # Set LLM on the internal memory system (not just the adapter)
-            if memory_adapter._memory_system:
-                memory_adapter._memory_system.set_llm(llm_adapter)
-            memory_system = memory_adapter
-
-        if memory_system:
-            console.print("[green]✓[/green] Vector memory system enabled")
-        else:
-            console.print("[yellow]Warning: Failed to initialize vector memory system[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Vector memory not available: {e}[/yellow]")
+    memory_system, mem_msg = _init_memory_system(
+        config, main_provider, memory_provider, config.workspace_path
+    )
+    console.print(mem_msg)
 
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
@@ -516,54 +531,14 @@ def agent(
     config = load_config()
     sync_workspace_templates(config.workspace_path)
 
-    # Vector memory is required
-    if not config.embedding.enabled:
-        console.print("[red]Error: embedding.enabled must be true in config[/red]")
-        return
-
     bus = MessageBus()
     main_provider, memory_provider = _make_provider(config)
 
     # Initialize vector-based memory system
-    memory_system = None
-    try:
-        from superbot.agent.memory_providers import (
-            create_embedding_provider,
-            create_llm_adapter,
-        )
-        from superbot.agent.memory_adapter import create_memory_adapter
-
-        embedding_provider = create_embedding_provider(config.embedding)
-
-        # Create memory adapter first to get memory_config
-        memory_adapter, memory_config = create_memory_adapter(
-            workspace=config.workspace_path,
-            embedding_provider=embedding_provider,
-            llm_provider=None,  # Will set after creating llm_adapter
-        )
-
-        # Use local model for memory if available, otherwise fall back to main provider
-        llm_provider_for_memory = memory_provider if memory_provider else main_provider
-        llm_adapter = create_llm_adapter(
-            llm_provider_for_memory,
-            config.agents.defaults.model,
-            config.embedding,
-            memory_config=memory_config,
-        )
-
-        # Set the llm_adapter on memory_adapter if it was created
-        if memory_adapter and llm_adapter:
-            # Set LLM on the internal memory system (not just the adapter)
-            if memory_adapter._memory_system:
-                memory_adapter._memory_system.set_llm(llm_adapter)
-            memory_system = memory_adapter
-
-        if memory_system:
-            console.print("[green]✓[/green] Vector memory system enabled")
-        else:
-            console.print("[yellow]Warning: Failed to initialize vector memory system[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Vector memory not available: {e}[/yellow]")
+    memory_system, mem_msg = _init_memory_system(
+        config, main_provider, memory_provider, config.workspace_path
+    )
+    console.print(mem_msg)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"

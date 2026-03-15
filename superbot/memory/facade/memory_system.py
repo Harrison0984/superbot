@@ -923,9 +923,6 @@ class MemorySystem:
                     **triple_data
                 })
 
-                if len(triples) >= limit:
-                    break
-
             # Sort by timestamp (newest first)
             triples.sort(key=lambda x: x.get("timestamp") or datetime.min, reverse=True)
             return triples
